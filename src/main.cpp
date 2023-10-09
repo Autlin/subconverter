@@ -279,7 +279,6 @@ int main(int argc, char *argv[])
 
     webServer.append_response("GET", "/render", "text/plain;charset=utf-8", renderTemplate);
 
-    webServer.append_response("GET", "/convert", "text/plain;charset=utf-8", getConvertedRuleset);
 
     if(!global.APIMode)
     {
