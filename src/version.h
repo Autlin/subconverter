@@ -1,6 +1,6 @@
 #ifndef VERSION_H_INCLUDED
 #define VERSION_H_INCLUDED
 
-#define VERSION "v1.1.2 Meta"
+#define VERSION "v1.1.3 Meta"
 
 #endif // VERSION_H_INCLUDED
