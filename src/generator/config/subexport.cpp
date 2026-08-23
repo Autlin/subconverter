@@ -599,7 +599,7 @@ proxyToClash(std::vector<Proxy> &nodes, YAML::Node &yamlnode, const ProxyGroupCo
                     singleproxy["password"] = x.Password;
                 }
                 if (!x.Fingerprint.empty()) {
-                    singleproxy["fingerprint"] = x.Fingerprint;
+                    singleproxy["client-fingerprint"] = x.Fingerprint;
                 }
                 if (!udp.is_undef()) {
                     singleproxy["udp"] = udp.get();
