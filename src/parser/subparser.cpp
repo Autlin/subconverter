@@ -1708,7 +1708,10 @@ void explodeClash(Node yamlnode, std::vector<Proxy> &nodes) {
                         alpns.push_back(alpn2);
                     }
                 }
-                singleproxy["fingerprint"] >>= fingerprint;
+                if (singleproxy["client-fingerprint"].IsDefined())
+                    singleproxy["client-fingerprint"] >>= fingerprint;
+                else
+                    singleproxy["fingerprint"] >>= fingerprint;
                 anyTlSConstruct(node, ANYTLS_DEFAULT_GROUP, ps, port, password, server, alpns, fingerprint, sni,
                                 udp,
                                 tribool(), scv, tribool(), underlying_proxy, 30, 30, 0);
@@ -1911,6 +1914,8 @@ void explodeStdVless(std::string vless, Proxy &node) {
 
     tls = getUrlArg(addition, "security");
     net = getUrlArg(addition, "type");
+    if (net.empty())
+        net = "tcp";
     flow = getUrlArg(addition, "flow");
     pbk = getUrlArg(addition, "pbk");
     sid = getUrlArg(addition, "sid");
