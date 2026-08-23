@@ -11,9 +11,13 @@ concurrency:
   group: ${{ github.ref }}-${{ github.workflow }}
   cancel-in-progress: true
 
+permissions:
+  contents: write
+
 jobs:
   linux_build:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - arch: x86
@@ -57,6 +61,7 @@ jobs:
 
   macos_build:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - arch: x86
@@ -96,6 +101,7 @@ jobs:
 
   windows_build:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - arch: x86
