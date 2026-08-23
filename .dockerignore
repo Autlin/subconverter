@@ -1,0 +1,9 @@
+.git
+.github
+.DS_Store
+build
+cmake-build-*
+subconverter
+cache
+*.log
+tests/__pycache__
