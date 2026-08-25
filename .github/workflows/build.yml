@@ -24,24 +24,29 @@ jobs:
             artifact: subconverter_linux32
             image_digest: sha256:da8e7afa12ad34df9341f149e9d24b557c7e524ecb87c69bff2916a16d04f746
             os: ubuntu-latest
+            qemu: true
           - arch: amd64
             artifact: subconverter_linux64
             image_digest: sha256:2fee8d2c1f48926bfb3fa65ed559f776856914f47c84f9fc48bf8ad0f2db5df8
             os: ubuntu-latest
+            qemu: false
           - arch: armv7
             artifact: subconverter_armv7
             image_digest: sha256:01551e7b433b231fc0175db3ed6dff0f4b7c30007f68c20c9854bd087c5c61d3
             os: ubuntu-latest
+            qemu: true
           - arch: aarch64
             artifact: subconverter_aarch64
             image_digest: sha256:89cfb80d20c0799839214fb9a7fc1fb425be59af1d79d793b3cca7fe4ed2b338
-            os: ubuntu-latest
+            os: ubuntu-24.04-arm
+            qemu: false
     runs-on: ${{ matrix.os }}
     name: Linux ${{ matrix.arch }} Build
     steps:
       - name: Checkout base
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Set up QEMU
+        if: ${{ matrix.qemu }}
         uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
       - name: Restore ccache
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
