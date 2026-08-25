@@ -162,6 +162,35 @@ std::vector<std::string> getUrlAlpnList(const std::string &addition) {
     return result;
 }
 
+void readClashAlpn(const YAML::Node &node, std::string &first, std::vector<std::string> &all) {
+    first.clear();
+    all.clear();
+    if (!node.IsDefined() || node.IsNull())
+        return;
+
+    auto append = [&](const YAML::Node &item) {
+        if (!item.IsScalar())
+            return;
+        try {
+            std::string value = item.as<std::string>();
+            if (!value.empty()) {
+                if (first.empty())
+                    first = value;
+                all.emplace_back(std::move(value));
+            }
+        } catch (const YAML::BadConversion &) {
+            // Ignore malformed ALPN items while preserving the rest of the node.
+        }
+    };
+
+    if (node.IsSequence()) {
+        for (const auto &item : node)
+            append(item);
+    } else {
+        append(node);
+    }
+}
+
 std::string getUrlAlpn(const std::string &addition) {
     return join(getUrlAlpnList(addition), ",");
 }
@@ -423,7 +452,7 @@ void hysteria2Construct(Proxy &node, const std::string &group, const std::string
 
 void tuicConstruct(Proxy &node, const std::string &group, const std::string &remarks, const std::string &add,
                    const std::string &port, const std::string &password, const std::string &congestion_control,
-                   const std::string &alpn,
+                   const std::vector<std::string> &alpn_list,
                    const std::string &sni, const std::string &uuid, const std::string &udpRelayMode,
                    const std::string &token,
                    tribool udp, tribool tfo,
@@ -431,7 +460,8 @@ void tuicConstruct(Proxy &node, const std::string &group, const std::string &rem
                    const std::string &underlying_proxy) {
     commonConstruct(node, ProxyType::TUIC, group, remarks, add, port, udp, tfo, scv, tribool(), underlying_proxy);
     node.Password = password;
-    node.Alpn = alpn;
+    node.AlpnList = alpn_list;
+    node.Alpn = alpn_list.empty() ? "" : alpn_list.front();
     node.ServerName = sni;
     node.CongestionControl = congestion_control;
     node.ReduceRtt = reduceRtt;
@@ -1294,8 +1324,12 @@ void explodeNetch(std::string netch, Proxy &node) {
 void explodeClash(Node yamlnode, std::vector<Proxy> &nodes) {
     Node singleproxy;
     uint32_t index = nodes.size();
-    const std::string section = yamlnode["proxies"].IsDefined() ? "proxies" : "Proxy";
-    for (uint32_t i = 0; i < yamlnode[section].size(); i++) {
+    const std::string section = yamlnode.IsSequence()
+                                    ? ""
+                                    : yamlnode["proxies"].IsDefined() ? "proxies" : "Proxy";
+    Node proxyList = yamlnode.IsSequence() ? yamlnode : yamlnode[section];
+    for (uint32_t i = 0; i < proxyList.size(); i++) {
+        try {
         std::string proxytype, ps, server, port, cipher, group, password = "", ports, tempPassword; //common
         std::string type = "none", id, aid = "0", net = "tcp", path, host, edge, tls, sni; //vmess
         std::string fp = "chrome", pbk, sid, packet_encoding, encryption; //vless
@@ -1310,13 +1344,14 @@ void explodeClash(Node yamlnode, std::vector<Proxy> &nodes) {
         std::string underlying_proxy;
         string_array dns_server;
         std::vector<String> alpns;
-        String alpn2;
         std::string fingerprint, multiplexing, transfer_protocol, v2ray_http_upgrade;
         tribool udp, tfo, scv;
         bool reduceRtt, disableSni; //tuic
         std::vector<std::string> alpnList;
         Proxy node;
-        singleproxy = yamlnode[section][i];
+        singleproxy = proxyList[i];
+        if (!singleproxy.IsMap())
+            continue;
         singleproxy["type"] >>= proxytype;
         singleproxy["name"] >>= ps;
         singleproxy["server"] >>= server;
@@ -1633,8 +1668,7 @@ void explodeClash(Node yamlnode, std::vector<Proxy> &nodes) {
                 singleproxy["obfs"] >> obfsParam;
                 singleproxy["protocol"] >> type;
                 singleproxy["sni"] >> host;
-                singleproxy["alpn"][0] >> alpn;
-                singleproxy["alpn"] >> alpnList;
+                readClashAlpn(singleproxy["alpn"], alpn, alpnList);
                 singleproxy["protocol"] >> insecure;
                 singleproxy["ports"] >> ports;
                 sni = host;
@@ -1668,46 +1702,39 @@ void explodeClash(Node yamlnode, std::vector<Proxy> &nodes) {
                 singleproxy["obfs"] >>= obfsParam;
                 singleproxy["obfs-password"] >>= obfsPassword;
                 singleproxy["sni"] >>= host;
-                singleproxy["alpn"][0] >>= alpn;
+                readClashAlpn(singleproxy["alpn"], alpn, alpnList);
                 singleproxy["ports"] >> ports;
                 sni = host;
                 hysteria2Construct(node, group, ps, server, port, password, host, up, down, alpn, obfsParam,
                                    obfsPassword, sni, public_key, ports, udp, tfo, scv, underlying_proxy);
                 break;
-            case "tuic"_hash:
+            case "tuic"_hash: {
                 group = TUIC_DEFAULT_GROUP;
-                uint16_t request_timeout;
+                uint16_t request_timeout = 15000;
                 singleproxy["password"] >>= password;
                 singleproxy["uuid"] >>= id;
                 singleproxy["congestion-controller"] >>= congestion_control;
                 singleproxy["udp-relay-mode"] >>= udp_relay_mode;
                 singleproxy["sni"] >>= sni;
-                if (!singleproxy["alpn"].IsNull()) {
-                    singleproxy["alpn"][0] >>= alpn;
-                }
+                readClashAlpn(singleproxy["alpn"], alpn, alpnList);
                 singleproxy["disable-sni"] >>= disableSni;
                 singleproxy["reduce-rtt"] >>= reduceRtt;
                 singleproxy["token"] >>= token;
-                singleproxy["request-timeout"] >>= request_timeout;
-                tuicConstruct(node, TUIC_DEFAULT_GROUP, ps, server, port, password, congestion_control, alpn, sni, id,
+                if (singleproxy["request-timeout"].IsDefined() && singleproxy["request-timeout"].IsScalar())
+                    request_timeout = safe_as<uint16_t>(singleproxy["request-timeout"]);
+                tuicConstruct(node, TUIC_DEFAULT_GROUP, ps, server, port, password, congestion_control, alpnList, sni, id,
                               udp_relay_mode, token,
                               tribool(),
                               tribool(), scv, reduceRtt, disableSni, request_timeout, underlying_proxy);
 
                 break;
+            }
             case "anytls"_hash:
                 group = ANYTLS_DEFAULT_GROUP;
                 singleproxy["password"] >>= password;
                 singleproxy["sni"] >>= sni;
 
-                if (!singleproxy["alpn"].IsNull() && singleproxy["alpn"].size() >= 1) {
-                    singleproxy["alpn"][0] >>= alpn;
-                    alpns.push_back(alpn);
-                    if (singleproxy["alpn"].size() >= 2 && !singleproxy["alpn"][1].IsNull()) {
-                        singleproxy["alpn"][1] >>= alpn2;
-                        alpns.push_back(alpn2);
-                    }
-                }
+                readClashAlpn(singleproxy["alpn"], alpn, alpns);
                 if (singleproxy["client-fingerprint"].IsDefined())
                     singleproxy["client-fingerprint"] >>= fingerprint;
                 else
@@ -1740,6 +1767,9 @@ void explodeClash(Node yamlnode, std::vector<Proxy> &nodes) {
         node.Id = index;
         nodes.emplace_back(std::move(node));
         index++;
+        } catch (const std::exception &e) {
+            writeLog(LOG_TYPE_ERROR, std::string("Clash proxy skipped: ") + e.what(), LOG_LEVEL_ERROR);
+        }
     }
 }
 
@@ -3053,6 +3083,7 @@ void explodeSingbox(rapidjson::Value &outbounds, std::vector<Proxy> &nodes) {
     uint32_t index = nodes.size();
     for (rapidjson::SizeType i = 0; i < outbounds.Size(); ++i) {
         if (outbounds[i].IsObject()) {
+            try {
             std::string proxytype, ps, server, port, cipher, group, password, ports, tempPassword; //common
             std::string type = "none", id, aid = "0", net = "tcp", path, host, edge, tls, sni; //vmess
             std::string fp = "chrome", pbk, sid, packet_encoding, encryption; //vless
@@ -3086,7 +3117,7 @@ void explodeSingbox(rapidjson::Value &outbounds, std::vector<Proxy> &nodes) {
                     sni = GetMember(tlsObj, "server_name");
                     if (tlsObj.HasMember("alpn") && tlsObj["alpn"].IsArray() && !tlsObj["alpn"].Empty()) {
                         rapidjson::Value alpns = tlsObj["alpn"].GetArray();
-                        if (alpns.Size() > 0) {
+                        if (alpns.Size() > 0 && alpns[0].IsString()) {
                             alpn = alpns[0].GetString();
                             for (auto &item: tlsObj["alpn"].GetArray()) {
                                 if (item.IsString())
@@ -3201,7 +3232,7 @@ void explodeSingbox(rapidjson::Value &outbounds, std::vector<Proxy> &nodes) {
                         }
 
                         vlessConstruct(node, group, ps, server, port, type, id, aid, net, "auto", flow, mode, path,
-                                       host, "", tls, pbk, sid, fp, sni, alpnList, packet_encoding, encryption,
+                                       host, "", tls, pbk, sid, fingerprint, sni, alpnList, packet_encoding, encryption,
                                        udp, tribool(), tribool(), tribool(), underlying_proxy);
                         break;
                     case "http"_hash:
@@ -3277,7 +3308,7 @@ void explodeSingbox(rapidjson::Value &outbounds, std::vector<Proxy> &nodes) {
                             rrt = singboxNode["zero_rtt_handshake"].GetBool();
                         }
                         udp_relay_mode = GetMember(singboxNode, "udp_relay_mode");
-                        tuicConstruct(node, TUIC_DEFAULT_GROUP, ps, server, port, password, congestion_control, alpn,
+                        tuicConstruct(node, TUIC_DEFAULT_GROUP, ps, server, port, password, congestion_control, alpnList,
                                       sni, id, udp_relay_mode, "",
                                       tribool(),
                                       tribool(), scv, rrt, disableSni, 15000, underlying_proxy);
@@ -3289,12 +3320,15 @@ void explodeSingbox(rapidjson::Value &outbounds, std::vector<Proxy> &nodes) {
                 nodes.emplace_back(std::move(node));
                 index++;
             }
+            } catch (const std::exception &e) {
+                writeLog(LOG_TYPE_ERROR, std::string("Sing-box outbound skipped: ") + e.what(), LOG_LEVEL_ERROR);
+            }
         }
     }
 }
 
 void explodeTuic(const std::string &tuic, Proxy &node) {
-    std::string add, port, password, host, insecure, alpn, remarks, sni, ports, congestion_control;
+    std::string add, port, password, host, insecure, remarks, sni, ports, congestion_control;
     std::string addition;
     tribool scv;
     std::string link = tuic.substr(7);
@@ -3339,12 +3373,12 @@ void explodeTuic(const std::string &tuic, Proxy &node) {
         add = add.substr(1, add.length() - 2);
 
     scv = getUrlArg(addition, "insecure");
-    alpn = getUrlAlpn(addition);
     sni = getUrlArg(addition, "sni");
     congestion_control = getUrlArg(addition, "congestion_control");
     if (remarks.empty())
         remarks = add + ":" + port;
-    tuicConstruct(node, TUIC_DEFAULT_GROUP, remarks, add, port, password, congestion_control, alpn, sni, uuid, "native",
+    tuicConstruct(node, TUIC_DEFAULT_GROUP, remarks, add, port, password, congestion_control,
+                  getUrlAlpnList(addition), sni, uuid, "native",
                   "",
                   tribool(),
                   tribool(), scv);
@@ -3447,44 +3481,34 @@ void explodeSub(std::string sub, std::vector<Proxy> &nodes) {
 
     //try to parse as clash configuration
     try {
-        if (!processed && regFind(sub, "\"?(Proxy|proxies)\"?:")) {
-            regGetMatch(sub, R"(^(?:Proxy|proxies):$\s(?:(?:^ +?.*$| *?-.*$|)\s?)+)", 1, &sub);
+        if (!processed) {
+            if (regFind(sub, "\"?(Proxy|proxies)\"?:")) {
+                regGetMatch(sub, R"(^(?:Proxy|proxies):$\s(?:(?:^ +?.*$| *?-.*$|)\s?)+)", 1, &sub);
+            }
             Node yamlnode = Load(sub);
-            if (yamlnode.size() && (yamlnode["Proxy"].IsDefined() || yamlnode["proxies"].IsDefined())) {
+            if (yamlnode.IsSequence() ||
+                (yamlnode.IsMap() && yamlnode.size() &&
+                 (yamlnode["Proxy"].IsDefined() || yamlnode["proxies"].IsDefined()))) {
                 explodeClash(yamlnode, nodes);
                 processed = true;
             }
         }
     } catch (std::exception &e) {
-        //writeLog(0, e.what(), LOG_LEVEL_DEBUG);
-        //ignore
-        throw;
+        writeLog(LOG_TYPE_ERROR, std::string("Clash subscription parse warning: ") + e.what(), LOG_LEVEL_ERROR);
     }
     try {
-        std::string pattern = "\"?(inbounds)\"?:";
-        if (!processed &&
-            regFind(sub, pattern)) {
-            pattern = "\"?(outbounds)\"?:";
-            if (regFind(sub, pattern)) {
-                pattern = "\"?(route)\"?:";
-                if (regFind(sub, pattern)) {
-                    rapidjson::Document document;
-                    document.Parse(sub.c_str());
-                    if (!document.HasParseError() || document.IsObject()) {
-                        rapidjson::Value &value = document["outbounds"];
-                        if (value.IsArray() && !value.Empty()) {
-                            explodeSingbox(value, nodes);
-                            processed = true;
-                        }
-                    }
-                }
+        if (!processed) {
+            rapidjson::Document document;
+            document.Parse(sub.c_str());
+            if (!document.HasParseError() && document.IsObject() &&
+                document.HasMember("outbounds") && document["outbounds"].IsArray() &&
+                !document["outbounds"].Empty()) {
+                explodeSingbox(document["outbounds"], nodes);
+                processed = true;
             }
         }
     } catch (std::exception &e) {
         writeLog(LOG_TYPE_ERROR, e.what(), LOG_LEVEL_ERROR);
-        //writeLog(0, e.what(), LOG_LEVEL_DEBUG);
-        //ignore
-        throw;
     }
     //try to parse as surge configuration
     if (!processed && explodeSurge(sub, nodes)) {

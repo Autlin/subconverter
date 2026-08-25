@@ -89,7 +89,7 @@ void snellConstruct(Proxy &node, const std::string &group, const std::string &re
 
 void tuicConstruct(Proxy &node, const std::string &group, const std::string &remarks, const std::string &add,
                    const std::string &port, const std::string &password, const std::string &congestion_control,
-                   const std::string &alpn,
+                   const std::vector<std::string> &alpn_list,
                    const std::string &sni, const std::string &uuid, const std::string &udpRelayMode,
                    const std::string &token,
                    tribool udp = tribool(), tribool tfo = tribool(),
