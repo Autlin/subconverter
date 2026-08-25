@@ -366,7 +366,8 @@ static qjs_fetch_Response qjs_fetch(qjs_fetch_Request request)
     }
 
     std::string response_headers;
-    FetchArgument argument {method, request.url, request.proxy, &request.postdata, &request.headers.headers, &request.cookies, 0};
+    // Script-provided cookies are deliberately not forwarded to remote URLs.
+    FetchArgument argument {method, request.url, request.proxy, &request.postdata, &request.headers.headers, nullptr, 0};
     FetchResult result {&response.status_code, &response.content, &response_headers, &response.cookies};
 
     webGet(argument, result);

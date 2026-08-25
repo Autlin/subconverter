@@ -79,11 +79,11 @@ std::string template_webGet(inja::Arguments &args)
 
 int render_template(const std::string &content, const template_args &vars, std::string &output, const std::string &include_scope)
 {
-    std::string absolute_scope;
+    std::filesystem::path absolute_scope;
     try
     {
         if(!include_scope.empty())
-            absolute_scope = std::filesystem::canonical(include_scope).string();
+            absolute_scope = std::filesystem::canonical(include_scope);
     }
     catch(std::exception &e)
     {
@@ -227,17 +227,22 @@ int render_template(const std::string &content, const template_args &vars, std::
 
     env.set_include_callback([&](const std::string &name, const std::string &template_name)
     {
-        std::string absolute_path;
+        std::filesystem::path absolute_path;
         try
         {
-            absolute_path = std::filesystem::canonical(template_name).string();
+            absolute_path = std::filesystem::canonical(template_name);
         }
         catch(std::exception &e)
         {
             throw inja::FileError(e.what());
         }
-        if(!absolute_scope.empty() && !startsWith(absolute_path, absolute_scope))
-            throw inja::FileError("access denied when trying to include '" + template_name + "': out of scope");
+        if(!absolute_scope.empty())
+        {
+            const auto relative = absolute_path.lexically_relative(absolute_scope);
+            const auto first = relative.begin();
+            if(relative.empty() || relative.is_absolute() || (first != relative.end() && *first == ".."))
+                throw inja::FileError("access denied when trying to include '" + template_name + "': out of scope");
+        }
         return env.parse(fileGet(template_name, true));
     });
     env.set_search_included_templates_in_files(false);

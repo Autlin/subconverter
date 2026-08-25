@@ -51,7 +51,7 @@ int addNodes(std::string link, std::vector<Proxy> &allNodes, int groupID, parse_
     link = replaceAllDistinct(link, "\"", "");
 
     /// script:filepath,arg1,arg2,...
-    if(authorized) script_safe_runner(parse_set.js_runtime, parse_set.js_context, [&](qjs::Context &ctx)
+    if(parse_set.scripts_authorized) script_safe_runner(parse_set.js_runtime, parse_set.js_context, [&](qjs::Context &ctx)
     {
         if(startsWith(link, "script:")) /// process subscription with script
         {

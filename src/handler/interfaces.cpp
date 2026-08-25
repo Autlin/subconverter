@@ -2,6 +2,7 @@
 #include <string>
 #include <mutex>
 #include <numeric>
+#include <filesystem>
 
 #include <inja.hpp>
 #include <yaml-cpp/yaml.h>
@@ -36,6 +37,36 @@
 extern WebServer webServer;
 
 string_array gRegexBlacklist = {"(.*)*"};
+
+static bool has_valid_access_token(const Request &request)
+{
+    return !global.accessToken.empty() && getUrlArg(request.argument, "token") == global.accessToken;
+}
+
+static bool resolve_template_path(const std::string &path, std::filesystem::path &resolved_path)
+{
+    try
+    {
+        const std::filesystem::path requested(path);
+        if(requested.empty() || requested.is_absolute())
+            return false;
+        const auto root = std::filesystem::weakly_canonical(
+            global.templatePath.empty() ? std::filesystem::path("templates") : std::filesystem::path(global.templatePath));
+        const auto candidate = std::filesystem::weakly_canonical(requested);
+        const auto relative = candidate.lexically_relative(root);
+        if(relative.empty() || relative.is_absolute())
+            return false;
+        const auto first = relative.begin();
+        if(first != relative.end() && *first == "..")
+            return false;
+        resolved_path = candidate;
+        return std::filesystem::is_regular_file(candidate);
+    }
+    catch(const std::filesystem::filesystem_error &)
+    {
+        return false;
+    }
+}
 
 std::string parseProxy(const std::string &source) {
     std::string proxy = source;
@@ -308,6 +339,8 @@ std::string subconverter(RESPONSE_CALLBACK_ARGS) {
         case "sssub"_hash:
         case "v2ray"_hash:
         case "trojan"_hash:
+        case "vless"_hash:
+        case "hysteria2"_hash:
         case "mixed"_hash:
             lSimpleSubscription = true;
             break;
@@ -365,8 +398,19 @@ std::string subconverter(RESPONSE_CALLBACK_ARGS) {
     int interval = !argUpdateInterval.empty()
                        ? to_int(argUpdateInterval, global.updateInterval)
                        : global.updateInterval;
+    const bool token_authorized = has_valid_access_token(request);
+    if(!argFilterScript.empty() && !token_authorized)
+    {
+        *status_code = 403;
+        return "Forbidden: filter_script requires a valid access token";
+    }
+    if(argUpload && !token_authorized)
+    {
+        *status_code = 403;
+        return "Forbidden: upload requires a valid access token";
+    }
     bool authorized =
-            !global.APIMode || getUrlArg(argument, "token") == global.accessToken, strict = !argUpdateStrict.empty()
+            !global.APIMode || token_authorized, strict = !argUpdateStrict.empty()
         ? argUpdateStrict == "true"
         : global.updateStrict;
 
@@ -423,7 +467,7 @@ std::string subconverter(RESPONSE_CALLBACK_ARGS) {
     std::string proxy = parseProxy(global.proxySubscription);
 
     /// check other flags
-    ext.authorized = authorized;
+    ext.authorized = token_authorized;
     ext.append_proxy_type = argAppendType.get(global.appendType);
     if ((argTarget == "clash" || argTarget == "clashr") && argGenClashScript.is_undef())
         argExpandRulesets.define(true);
@@ -543,7 +587,7 @@ std::string subconverter(RESPONSE_CALLBACK_ARGS) {
         lExcludeRemarks = string_array{argExcludeRemark};
 
     /// initialize script runtime
-    if (authorized && !global.scriptCleanContext) {
+    if (token_authorized && !global.scriptCleanContext) {
         ext.js_runtime = new qjs::Runtime();
         script_runtime_init(*ext.js_runtime);
         ext.js_context = new qjs::Context(*ext.js_runtime);
@@ -566,6 +610,7 @@ std::string subconverter(RESPONSE_CALLBACK_ARGS) {
     parse_set.time_rules = &time_temp;
     parse_set.sub_info = &subInfo;
     parse_set.authorized = authorized;
+    parse_set.scripts_authorized = token_authorized;
     parse_set.request_header = &request.headers;
     parse_set.js_runtime = ext.js_runtime;
     parse_set.js_context = ext.js_context;
@@ -625,7 +670,7 @@ std::string subconverter(RESPONSE_CALLBACK_ARGS) {
     }
     //run filter script
     std::string filterScript = global.filterScript;
-    if (authorized && !argFilterScript.empty())
+    if (token_authorized && !argFilterScript.empty())
         filterScript = argFilterScript;
     if (!filterScript.empty()) {
         if (startsWith(filterScript, "path:"))
@@ -814,13 +859,13 @@ std::string subconverter(RESPONSE_CALLBACK_ARGS) {
             break;
         case "vless"_hash:
             writeLog(0, "Generate target: vless", LOG_LEVEL_INFO);
-            output_content = proxyToSingle(nodes, 16, ext);
+            output_content = proxyToSingle(nodes, 32, ext);
             if (argUpload)
                 uploadGist("vless", argUploadPath, output_content, false);
             break;
         case "hysteria2"_hash:
             writeLog(0, "Generate target: hysteria2", LOG_LEVEL_INFO);
-            output_content = proxyToSingle(nodes, 32, ext);
+            output_content = proxyToSingle(nodes, 16, ext);
             if (argUpload)
                 uploadGist("hysteria2", argUploadPath, output_content, false);
             break;
@@ -1028,7 +1073,8 @@ std::string surgeConfToClash(RESPONSE_CALLBACK_ARGS) {
     parse_set.stream_rules = parse_set.time_rules = &dummy_regex_array;
     parse_set.request_header = &request.headers;
     parse_set.sub_info = &subInfo;
-    parse_set.authorized = !global.APIMode;
+    parse_set.authorized = !global.APIMode || has_valid_access_token(request);
+    parse_set.scripts_authorized = has_valid_access_token(request);
     for (std::string &x: links) {
         //std::cerr<<"Fetching node data from url '"<<x<<"'."<<std::endl;
         writeLog(0, "Fetching node data from url '" + x + "'.", LOG_LEVEL_INFO);
@@ -1391,11 +1437,12 @@ std::string renderTemplate(RESPONSE_CALLBACK_ARGS) {
     std::string path = getUrlArg(argument, "path");
     writeLog(0, "Trying to render template '" + path + "'...", LOG_LEVEL_INFO);
 
-    if (!startsWith(path, global.templatePath) || !fileExist(path)) {
+    std::filesystem::path resolved_path;
+    if (!resolve_template_path(path, resolved_path)) {
         *status_code = 404;
         return "Not found";
     }
-    std::string template_content = fetchFile(path, parseProxy(global.proxyConfig), global.cacheConfig);
+    std::string template_content = fileGet(resolved_path.string(), false);
     if (template_content.empty()) {
         *status_code = 400;
         return "File empty or out of scope";
