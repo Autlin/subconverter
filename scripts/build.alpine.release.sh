@@ -1,8 +1,14 @@
 #!/bin/bash
 set -xe
 
-apk add gcc g++ build-base linux-headers cmake make autoconf automake libtool python2 python3 py3-pip
+apk add gcc g++ ccache build-base linux-headers cmake make autoconf automake libtool python2 python3 py3-pip
 apk add mbedtls-dev mbedtls-static zlib-dev rapidjson-dev zlib-static pcre2-dev
+
+export CCACHE_DIR="${CCACHE_DIR:-$PWD/.ccache}"
+export CCACHE_BASEDIR="${CCACHE_BASEDIR:-$PWD}"
+export CCACHE_COMPILERCHECK="${CCACHE_COMPILERCHECK:-content}"
+export CCACHE_MAXSIZE="${CCACHE_MAXSIZE:-750M}"
+export CCACHE_COMPRESS="${CCACHE_COMPRESS:-1}"
 
 git clone --no-checkout https://github.com/curl/curl
 cd curl
@@ -55,11 +61,13 @@ cmake -DCMAKE_BUILD_TYPE=Release .
 make -j3
 rm subconverter
 # shellcheck disable=SC2046
-g++ -o base/subconverter $(find CMakeFiles/subconverter.dir/src/ -name "*.o")  -static -lpcre2-8 -lyaml-cpp -L/usr/lib64 -lcurl -lmbedtls -lmbedcrypto -lmbedx509 -lz -l:quickjs/libquickjs.a -llibcron -O3 -s
+ccache g++ -o base/subconverter $(find CMakeFiles/subconverter.dir/src/ -name "*.o")  -static -lpcre2-8 -lyaml-cpp -L/usr/lib64 -lcurl -lmbedtls -lmbedcrypto -lmbedx509 -lz -l:quickjs/libquickjs.a -llibcron -O3 -s
 
 PIP_BREAK_SYSTEM_PACKAGES=1 python3 -m pip install --no-cache-dir \
     GitPython==3.1.59 gitdb==4.0.12 smmap==5.0.3 typing-extensions==4.7.1
 python3 scripts/update_rules.py -c scripts/rules_config.conf
+
+ccache --show-stats
 
 cd base
 chmod +rx subconverter

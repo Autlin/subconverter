@@ -43,11 +43,19 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Set up QEMU
         uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+      - name: Restore ccache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: .ccache/${{ matrix.arch }}
+          key: linux-ccache-${{ matrix.arch }}-gcc-${{ matrix.image_digest }}-${{ hashFiles('scripts/build.alpine.release.sh', 'scripts/rules_config.conf', 'scripts/update_rules.py') }}-${{ github.sha }}
+          restore-keys: |
+            linux-ccache-${{ matrix.arch }}-gcc-${{ matrix.image_digest }}-${{ hashFiles('scripts/build.alpine.release.sh', 'scripts/rules_config.conf', 'scripts/update_rules.py') }}-
+            linux-ccache-${{ matrix.arch }}-gcc-${{ matrix.image_digest }}-
       - name: Add commit id into version
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
         run: SHA=$(git rev-parse --short HEAD) && sed -i 's/\(v[0-9]\.[0-9]\.[0-9]\)/\1-'"$SHA"'/' src/version.h
       - name: Build
-        run: docker run --rm -v $GITHUB_WORKSPACE:/root/workdir multiarch/alpine:${{ matrix.arch }}-latest-stable@${{ matrix.image_digest }} /bin/sh -c "apk add bash git nodejs npm && cd /root/workdir && chmod +x scripts/build.alpine.release.sh && bash scripts/build.alpine.release.sh"
+        run: docker run --rm -e CCACHE_DIR=/root/workdir/.ccache/${{ matrix.arch }} -e CCACHE_BASEDIR=/root/workdir -e CCACHE_COMPILERCHECK=content -e CCACHE_MAXSIZE=750M -e CCACHE_COMPRESS=1 -e CC='ccache gcc' -e CXX='ccache g++' -v $GITHUB_WORKSPACE:/root/workdir multiarch/alpine:${{ matrix.arch }}-latest-stable@${{ matrix.image_digest }} /bin/sh -c "apk add bash git nodejs npm && cd /root/workdir && chmod +x scripts/build.alpine.release.sh && bash scripts/build.alpine.release.sh"
       - name: Upload
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
