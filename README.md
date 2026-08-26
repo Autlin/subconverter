@@ -14,6 +14,7 @@ original git: https://github.com/asdlokj1qpi23/subconverter
 [中文文档](https://github.com/asdlokj1qpi23/subconverter/blob/master/README-cn.md)
 
 - [subconverter](#subconverter)
+  - [Debian Installation and Updates](#debian-installation-and-updates)
   - [Docker](#docker)
   - [Supported Types](#supported-types)
   - [Quick Usage](#quick-usage)
@@ -21,7 +22,41 @@ original git: https://github.com/asdlokj1qpi23/subconverter
     - [Description](#description)
   - [Advanced Usage](#advanced-usage)
   - [Auto Upload](#auto-upload)
-  
+
+## Debian Installation and Updates
+
+The project provides one unified deployment and update script. It does not compile source code on the server. The script detects the CPU architecture, downloads the latest static binary from GitHub Releases, verifies its SHA256 checksum, configures a systemd service, and rolls back automatically if an update fails.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Autlin/subconverter/master/subconverter-manager.sh \
+  -o subconverter-manager.sh
+chmod +x subconverter-manager.sh
+sudo ./subconverter-manager.sh
+```
+
+The interactive menu provides:
+
+```text
+1. Fresh deployment
+2. One-click update
+3. Exit
+```
+
+You can also run either operation directly through the same script:
+
+```bash
+sudo ./subconverter-manager.sh deploy
+sudo ./subconverter-manager.sh update
+```
+
+The default installation directory is `/opt/subconverter`, and the service name is `subconverter`. Before an update, the script backs up and preserves the active configuration, `config/`, `profiles/`, `snippets/`, `rules/`, `base/`, `cache/`, `gistconf.ini`, and `generate.ini`. Backups are stored in `/opt/subconverter/backups/`, and operation logs are written to `/var/log/subconverter-manager.log`.
+
+To import an existing manual deployment, specify its directory:
+
+```bash
+sudo SUBCONVERTER_IMPORT_DIR=/path/to/existing/subconverter ./subconverter-manager.sh deploy
+```
+
 ## Docker
 
 For running this docker, simply use the following commands:
