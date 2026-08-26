@@ -89,14 +89,20 @@ require_root() {
 }
 
 initialize_logging() {
-    install -d -m 0755 "$(dirname "${LOG_FILE}")"
+    local log_directory=""
+    log_directory="$(dirname "${LOG_FILE}")"
+    if [[ ! -d "${log_directory}" ]]; then
+        install -d -m 0755 "${log_directory}"
+    fi
     touch "${LOG_FILE}"
     chmod 0600 "${LOG_FILE}"
     exec > >(tee -a "${LOG_FILE}") 2>&1
 }
 
 acquire_lock() {
-    install -d -m 0755 /run/lock
+    if [[ ! -d /run/lock ]]; then
+        install -d -m 0755 /run/lock
+    fi
     LOCK_FILE="/run/lock/${SERVICE_NAME}-manager.lock"
     exec 9>"${LOCK_FILE}"
     if ! flock -n 9; then
@@ -196,7 +202,9 @@ check_disk_space() {
     local available_kb=""
 
     parent="$(dirname "${INSTALL_ROOT}")"
-    install -d -m 0755 "${parent}"
+    if [[ ! -d "${parent}" ]]; then
+        install -d -m 0755 "${parent}"
+    fi
     available_kb="$(df -Pk "${parent}" | awk 'NR == 2 {print $4}')"
     [[ "${available_kb}" =~ ^[0-9]+$ ]] || fail "无法读取磁盘剩余空间"
     ((available_kb >= 204800)) || fail "磁盘空间不足，至少需要 200 MB 可用空间"
@@ -303,8 +311,15 @@ download_and_verify_release() {
         fail "发布包包含不安全路径，已拒绝解压"
     fi
 
+    if LC_ALL=C tar -tvzf "${archive}" | LC_ALL=C awk '
+        substr($0, 1, 1) == "l" || substr($0, 1, 1) == "h" { unsafe = 1 }
+        END { exit unsafe ? 0 : 1 }
+    '; then
+        fail "发布包包含链接条目，已拒绝解压"
+    fi
+
     install -d -m 0755 "${TEMP_DIR}/extract"
-    tar -xzf "${archive}" -C "${TEMP_DIR}/extract"
+    tar --no-same-owner --no-same-permissions -xzf "${archive}" -C "${TEMP_DIR}/extract"
     PAYLOAD_DIR="${TEMP_DIR}/extract/subconverter"
 
     local unsafe_link=""
@@ -510,8 +525,12 @@ generate_token() {
 
 ensure_environment_file() {
     local preserve_source="${1:-}"
+    local environment_directory=""
 
-    install -d -m 0755 "$(dirname "${ENV_FILE}")"
+    environment_directory="$(dirname "${ENV_FILE}")"
+    if [[ ! -d "${environment_directory}" ]]; then
+        install -d -m 0755 "${environment_directory}"
+    fi
 
     if [[ -f "${ENV_FILE}" ]]; then
         HAD_ENV_FILE=1
@@ -544,11 +563,18 @@ EOF
 service_uses_managed_paths() {
     local working_directory=""
     local exec_start=""
+    local configured_user=""
+    local configured_group=""
 
     working_directory="$(systemctl show -p WorkingDirectory --value "${SERVICE_NAME}.service" 2>/dev/null || true)"
     exec_start="$(systemctl show -p ExecStart --value "${SERVICE_NAME}.service" 2>/dev/null || true)"
+    configured_user="$(systemctl show -p User --value "${SERVICE_NAME}.service" 2>/dev/null || true)"
+    configured_group="$(systemctl show -p Group --value "${SERVICE_NAME}.service" 2>/dev/null || true)"
 
-    [[ "${working_directory}" == "${CURRENT_LINK}" && "${exec_start}" == *"${CURRENT_LINK}/subconverter"* ]]
+    [[ "${working_directory}" == "${CURRENT_LINK}" &&
+        "${exec_start}" == *"${CURRENT_LINK}/subconverter"* &&
+        "${configured_user}" == "${SERVICE_USER}" &&
+        (-z "${configured_group}" || "${configured_group}" == "${SERVICE_USER}") ]]
 }
 
 write_service_unit() {
@@ -633,9 +659,58 @@ switch_current_release() {
 configured_port() {
     local port="25500"
     local configured=""
+    local config_file=""
 
     if [[ -f "${ENV_FILE}" ]]; then
         configured="$(sed -n 's/^PORT=//p' "${ENV_FILE}" | tail -n 1 | tr -d '\"\r')"
+        if [[ "${configured}" =~ ^[0-9]+$ ]] && ((configured >= 1 && configured <= 65535)); then
+            printf '%s\n' "${configured}"
+            return 0
+        fi
+    fi
+
+    if [[ -f "${CURRENT_LINK}/pref.toml" ]]; then
+        config_file="${CURRENT_LINK}/pref.toml"
+    elif [[ -f "${CURRENT_LINK}/pref.yml" ]]; then
+        config_file="${CURRENT_LINK}/pref.yml"
+    elif [[ -f "${CURRENT_LINK}/pref.ini" ]]; then
+        config_file="${CURRENT_LINK}/pref.ini"
+    fi
+
+    if [[ -n "${config_file}" ]]; then
+        case "${config_file}" in
+            *.ini | *.toml)
+                configured="$(awk '
+                    /^[[:space:]]*\[/ {
+                        section = ($0 ~ /^[[:space:]]*\[server\][[:space:]]*$/)
+                        next
+                    }
+                    section && /^[[:space:]]*port[[:space:]]*=/ {
+                        value = $0
+                        sub(/^[^=]*=[[:space:]]*/, "", value)
+                        gsub(/[[:space:]"\047]/, "", value)
+                        print value
+                        exit
+                    }
+                ' "${config_file}")"
+                ;;
+            *.yml)
+                configured="$(awk '
+                    /^[^[:space:]#]/ {
+                        section = ($0 ~ /^server:[[:space:]]*$/)
+                        next
+                    }
+                    section && /^[[:space:]]+port:[[:space:]]*/ {
+                        value = $0
+                        sub(/^[[:space:]]*port:[[:space:]]*/, "", value)
+                        gsub(/[[:space:]"\047]/, "", value)
+                        print value
+                        exit
+                    }
+                ' "${config_file}")"
+                ;;
+        esac
+
         if [[ "${configured}" =~ ^[0-9]+$ ]] && ((configured >= 1 && configured <= 65535)); then
             port="${configured}"
         fi
