@@ -114,6 +114,84 @@ jobs:
           switch_current_release "${RELEASES_DIR}/new"
           test "$(readlink -f "${CURRENT_LINK}")" = "$(readlink -f "${RELEASES_DIR}/new")"
 
+      - name: Verify preserved configuration port detection
+        run: |
+          set -euo pipefail
+          test_root="$(mktemp -d)"
+          export SUBCONVERTER_HOME="${test_root}/install"
+          export SUBCONVERTER_ENV_FILE="${test_root}/environment"
+          export SUBCONVERTER_LOG_FILE="${test_root}/manager.log"
+          source ./subconverter-manager.sh
+          mkdir -p "${CURRENT_LINK}"
+
+          printf '[server]\nport=28080\n' > "${CURRENT_LINK}/pref.ini"
+          test "$(configured_port)" = '28080'
+
+          printf '[server]\nport = 28081\n' > "${CURRENT_LINK}/pref.toml"
+          test "$(configured_port)" = '28081'
+
+          printf 'server:\n  port: 28082\n' > "${CURRENT_LINK}/pref.yml"
+          test "$(configured_port)" = '28081'
+
+          rm "${CURRENT_LINK}/pref.toml"
+          test "$(configured_port)" = '28082'
+
+          printf 'PORT=28083\n' > "${ENV_FILE}"
+          test "$(configured_port)" = '28083'
+
+      - name: Smoke test real systemd deployment and update
+        run: |
+          set -euo pipefail
+          service_name=subconverter-ci
+          install_root=/opt/subconverter-ci
+          environment_file=/etc/default/subconverter-ci
+          log_file=/tmp/subconverter-ci-manager.log
+
+          printf 'PORT=28080\nAPI_MODE=true\nAPI_TOKEN=installer-ci\n' |
+            sudo tee "${environment_file}" >/dev/null
+          sudo chmod 0600 "${environment_file}"
+
+          sudo env \
+            SUBCONVERTER_ASSUME_YES=1 \
+            SUBCONVERTER_HOME="${install_root}" \
+            SUBCONVERTER_SERVICE="${service_name}" \
+            SUBCONVERTER_USER="${service_name}" \
+            SUBCONVERTER_ENV_FILE="${environment_file}" \
+            SUBCONVERTER_LOG_FILE="${log_file}" \
+            ./subconverter-manager.sh deploy
+
+          curl --fail --silent --show-error http://127.0.0.1:28080/version | grep -q 'subconverter'
+          test "$(systemctl show -p User --value "${service_name}.service")" = "${service_name}"
+
+          sudo sed -i '/^\[server\]/,/^\[advanced\]/ s/^port = .*/port = 28081/' \
+            "${install_root}/current/pref.toml"
+          sudo truncate -s 0 "${environment_file}"
+          sudo systemctl restart "${service_name}.service"
+          for attempt in {1..30}; do
+            if curl --fail --silent --show-error --max-time 2 \
+              http://127.0.0.1:28081/version | grep -q 'subconverter'; then
+              break
+            fi
+            if [[ "${attempt}" == '30' ]]; then
+              sudo journalctl -u "${service_name}.service" -n 100 --no-pager
+              exit 1
+            fi
+            sleep 1
+          done
+
+          sudo sed -i 's/^TAG=.*/TAG=v0.0.0/' "${install_root}/current/.subconverter-release"
+          sudo env \
+            SUBCONVERTER_ASSUME_YES=1 \
+            SUBCONVERTER_HOME="${install_root}" \
+            SUBCONVERTER_SERVICE="${service_name}" \
+            SUBCONVERTER_USER="${service_name}" \
+            SUBCONVERTER_ENV_FILE="${environment_file}" \
+            SUBCONVERTER_LOG_FILE="${log_file}" \
+            ./subconverter-manager.sh update
+
+          curl --fail --silent --show-error http://127.0.0.1:28081/version | grep -q 'subconverter'
+          systemctl is-active --quiet "${service_name}.service"
+
       - name: Verify failed activation rollback
         run: |
           set -euo pipefail
