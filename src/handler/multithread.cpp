@@ -63,8 +63,10 @@ std::shared_future<std::string> fetchFileAsync(const std::string &path, const st
     std::shared_future<std::string> retVal;
     /*if(vfs::vfs_exist(path))
         retVal = std::async(std::launch::async, [path](){return vfs::vfs_get(path);});
-    else */if(find_local && fileExist(path, true))
-        retVal = std::async(std::launch::async, [path](){return fileGet(path, true);});
+    // Local mode intentionally permits explicitly supplied local subscriptions;
+    // API mode keeps the scoped filesystem check for public deployments.
+    else */if(find_local && (!global.APIMode ? fileExist(path, false) : fileExist(path, true)))
+        retVal = std::async(std::launch::async, [path](){return fileGet(path, global.APIMode);});
     else if(isLink(path))
         retVal = std::async(std::launch::async, [path, proxy, cache_ttl](){return webGet(path, proxy, cache_ttl);});
     else

@@ -533,8 +533,12 @@ proxyToClash(std::vector<Proxy> &nodes, YAML::Node &yamlnode, const ProxyGroupCo
                     singleproxy["skip-cert-verify"] = scv.get();
                 if (x.Insecure == "1")
                     singleproxy["skip-cert-verify"] = true;
-                if (!x.Alpn.empty())
+                if (!x.AlpnList.empty()) {
+                    for (const auto &item: x.AlpnList)
+                        singleproxy["alpn"].push_back(item);
+                } else if (!x.Alpn.empty()) {
                     singleproxy["alpn"].push_back(x.Alpn);
+                }
                 if (!x.OBFSParam.empty())
                     singleproxy["obfs"] = x.OBFSParam;
                 break;
@@ -579,8 +583,12 @@ proxyToClash(std::vector<Proxy> &nodes, YAML::Node &yamlnode, const ProxyGroupCo
                 }
                 if (!scv.is_undef())
                     singleproxy["skip-cert-verify"] = scv.get();
-                if (!x.Alpn.empty())
+                if (!x.AlpnList.empty()) {
+                    for (const auto &item: x.AlpnList)
+                        singleproxy["alpn"].push_back(item);
+                } else if (!x.Alpn.empty()) {
                     singleproxy["alpn"].push_back(x.Alpn);
+                }
                 singleproxy["disable-sni"] = x.DisableSni.get();
                 singleproxy["reduce-rtt"] = x.ReduceRtt.get();
                 singleproxy["request-timeout"] = x.RequestTimeout;
@@ -1360,7 +1368,7 @@ std::string proxyToSingle(std::vector<Proxy> &nodes, int types, extra_settings &
                 }
                 proxyStr += "#" + urlEncode(remark);
                 break;
-            case ProxyType::VLESS:
+            case ProxyType::VLESS: {
                 if (!vless)
                     continue;
             // tls = getUrlArg(addition, "security");
@@ -1373,56 +1381,62 @@ std::string proxyToSingle(std::vector<Proxy> &nodes, int types, extra_settings &
             // std::string alpn = getUrlArg(addition, "alpn");
                 proxyStr = "vless://" + (id.empty()
                                ? "00000000-0000-0000-0000-000000000000"
-                               : id) + "@" + hostname + ":" + port+"?";
+                               : id) + "@" + hostname + ":" + port;
+                bool hasQuery = false;
+                auto appendQuery = [&](const std::string &key, const std::string &value) {
+                    proxyStr += hasQuery ? "&" : "?";
+                    proxyStr += key + "=" + value;
+                    hasQuery = true;
+                };
                 if (!tls.empty()) {
                     if (!pbk.empty()) {
-                        proxyStr += "&security=reality";
+                        appendQuery("security", "reality");
                     }else {
-                        proxyStr += "&security=" + tls;
+                        appendQuery("security", tls);
                     }
                 }
 
                 if (!flow.empty()) {
-                    proxyStr += "&flow=" + flow;
+                    appendQuery("flow", flow);
                 }
                 if (!pbk.empty()) {
-                    proxyStr += "&pbk=" + pbk;
+                    appendQuery("pbk", pbk);
                 }
                 if (!sid.empty()) {
-                    proxyStr += "&sid=" + sid;
+                    appendQuery("sid", sid);
                 }
                 if (!fp.empty()) {
-                    proxyStr += "&fp=" + fp;
+                    appendQuery("fp", fp);
                 }
                 if (!packet_encoding.empty()) {
-                    proxyStr += "&packet-encoding=" + packet_encoding;
+                    appendQuery("packet-encoding", packet_encoding);
                 }
                 if (!alpns.empty()) {
-                    proxyStr += "&alpn=" + urlEncode(join(alpns, ","));
+                    appendQuery("alpn", urlEncode(join(alpns, ",")));
                 }
                 if (!sni.empty()) {
-                    proxyStr += "&sni=" + sni;
+                    appendQuery("sni", sni);
                 }
                 if (!transproto.empty()) {
-                    proxyStr += "&type=" + transproto;
+                    appendQuery("type", transproto);
                     switch (hash_(transproto)) {
                         case "tcp"_hash:
                         case "ws"_hash:
                         case "h2"_hash:
-                            proxyStr += "&headerType=" + fake_type;
+                            appendQuery("headerType", fake_type);
                             if (!host.empty()) {
-                                proxyStr += "&host=" + host;
+                                appendQuery("host", host);
                             }
-                            proxyStr += "&path=" + urlEncode(path.empty() ? "/" : path);
+                            appendQuery("path", urlEncode(path.empty() ? "/" : path));
                             break;
                         case "grpc"_hash:
-                            proxyStr += "&serviceName=" + path;
-                            proxyStr += "&mode=" + mode;
+                            appendQuery("serviceName", path);
+                            appendQuery("mode", mode);
                             break;
                         case "quic"_hash:
-                            proxyStr += "&headerType=" + fake_type;
-                            proxyStr += "&quicSecurity=" + (host.empty() ? sni : host);
-                            proxyStr += "&key=" + path;
+                            appendQuery("headerType", fake_type);
+                            appendQuery("quicSecurity", host.empty() ? sni : host);
+                            appendQuery("key", path);
                             break;
                         default:
                             break;
@@ -1430,6 +1444,7 @@ std::string proxyToSingle(std::vector<Proxy> &nodes, int types, extra_settings &
                 }
                 proxyStr += "#" + urlEncode(remark);
                 break;
+            }
             case ProxyType::Trojan:
                 if (!trojan)
                     continue;
@@ -2891,8 +2906,10 @@ proxyToSingBox(std::vector<Proxy> &nodes, rapidjson::Document &json,
                 if (!x.TLSSecure) {
                     rapidjson::Value tls(rapidjson::kObjectType);
                     tls.AddMember("enabled", true, allocator);
-                    if (!x.Alpn.empty()) {
-                        auto alpns = stringArrayToJsonArray(x.Alpn, ",", allocator);
+                    if (!x.AlpnList.empty() || !x.Alpn.empty()) {
+                        auto alpns = !x.AlpnList.empty()
+                            ? vectorToJsonArray(x.AlpnList, allocator)
+                            : stringArrayToJsonArray(x.Alpn, ",", allocator);
                         tls.AddMember("alpn", alpns, allocator);
                     }
                     if (!x.ServerName.empty()) {
@@ -2957,7 +2974,7 @@ proxyToSingBox(std::vector<Proxy> &nodes, rapidjson::Document &json,
                 addSingBoxCommonMembers(proxy, x, "tuic", allocator);
                 proxy.AddMember("password", rapidjson::StringRef(x.Password.c_str()), allocator);
                 proxy.AddMember("uuid", rapidjson::StringRef(x.UserId.c_str()), allocator);
-                if (!x.TLSSecure && !x.Alpn.empty()) {
+                if (!x.TLSSecure) {
                     rapidjson::Value tls(rapidjson::kObjectType);
                     tls.AddMember("enabled", true, allocator);
                     if (!scv.is_undef()) {
@@ -2965,8 +2982,10 @@ proxyToSingBox(std::vector<Proxy> &nodes, rapidjson::Document &json,
                     }
                     if (!x.ServerName.empty())
                         tls.AddMember("server_name", rapidjson::StringRef(x.ServerName.c_str()), allocator);
-                    if (!x.Alpn.empty()) {
-                        auto alpns = stringArrayToJsonArray(x.Alpn, ",", allocator);
+                    if (!x.AlpnList.empty() || !x.Alpn.empty()) {
+                        auto alpns = !x.AlpnList.empty()
+                            ? vectorToJsonArray(x.AlpnList, allocator)
+                            : stringArrayToJsonArray(x.Alpn, ",", allocator);
                         tls.AddMember("alpn", alpns, allocator);
                     }
                     if (!x.DisableSni.is_undef()) {
@@ -3027,11 +3046,14 @@ proxyToSingBox(std::vector<Proxy> &nodes, rapidjson::Document &json,
             tls.AddMember("insecure", buildBooleanValue(scv), allocator);
             if (x.Type == ProxyType::VLESS) {
                 rapidjson::Value reality(rapidjson::kObjectType);
-                if (!x.PublicKey.empty() || !x.ShortId.empty()) {
+                if (!x.Fingerprint.empty() || !x.PublicKey.empty() || !x.ShortId.empty()) {
                     rapidjson::Value utls(rapidjson::kObjectType);
                     utls.AddMember("enabled", true, allocator);
-                    utls.AddMember("fingerprint", rapidjson::StringRef("chrome"), allocator);
+                    utls.AddMember("fingerprint", rapidjson::StringRef(
+                        x.Fingerprint.empty() ? "chrome" : x.Fingerprint.c_str()), allocator);
                     tls.AddMember("utls", utls, allocator);
+                }
+                if (!x.PublicKey.empty() || !x.ShortId.empty()) {
                     reality.AddMember("enabled", true, allocator);
                     if (!x.PublicKey.empty()) {
                         reality.AddMember("public_key", rapidjson::StringRef(x.PublicKey.c_str()), allocator);

@@ -1,19 +1,34 @@
 #include <string>
 #include <fstream>
+#include <filesystem>
 #include <sys/stat.h>
 
 #include "utils/string.h"
 
+namespace
+{
+bool isWithinRoot(const std::filesystem::path &root, const std::filesystem::path &candidate)
+{
+    const auto relative = candidate.lexically_relative(root);
+    if(relative.empty() || relative.is_absolute())
+        return false;
+    const auto first = relative.begin();
+    return first == relative.end() || *first != "..";
+}
+}
+
 bool isInScope(const std::string &path)
 {
-#ifdef _WIN32
-    if(path.find(":\\") != path.npos || path.find("..") != path.npos)
+    try
+    {
+        const auto root = std::filesystem::weakly_canonical(std::filesystem::current_path());
+        const auto candidate = std::filesystem::weakly_canonical(std::filesystem::path(path));
+        return isWithinRoot(root, candidate);
+    }
+    catch(const std::filesystem::filesystem_error &)
+    {
         return false;
-#else
-    if(startsWith(path, "/") || path.find("..") != path.npos)
-        return false;
-#endif // _WIN32
-    return true;
+    }
 }
 
 // TODO: Add preprocessor option to disable (open web service safety)
@@ -104,6 +119,8 @@ int fileWrite(const std::string &path, const std::string &content, bool overwrit
     */
     const char *mode = overwrite ? "wb" : "ab";
     std::FILE *fp = std::fopen(path.c_str(), mode);
+    if(fp == nullptr)
+        return -1;
     std::fwrite(content.c_str(), 1, content.size(), fp);
     std::fclose(fp);
     return 0;

@@ -2,6 +2,7 @@
 #include <string>
 #include <unistd.h>
 #include <csignal>
+#include <filesystem>
 
 #include <sys/types.h>
 #include <dirent.h>
@@ -25,6 +26,45 @@
 //#include "vfs.h"
 
 WebServer webServer;
+
+namespace
+{
+bool has_valid_access_token(const Request &request)
+{
+    return !global.accessToken.empty() && getUrlArg(request.argument, "token") == global.accessToken;
+}
+
+bool resolve_path_within_root(const std::string &root_string, const std::string &path_string,
+                              std::filesystem::path &resolved_path)
+{
+    try
+    {
+        const std::filesystem::path requested(path_string);
+        if(requested.is_absolute())
+            return false;
+        for(const auto &part : requested)
+            if(part == std::filesystem::path(".."))
+                return false;
+        auto root_path = std::filesystem::path(root_string);
+        if(root_path.empty() || !std::filesystem::is_directory(root_path))
+            root_path = std::filesystem::current_path();
+        const auto root = std::filesystem::weakly_canonical(root_path);
+        const auto path = std::filesystem::weakly_canonical(root / requested);
+        const auto relative = path.lexically_relative(root);
+        if(relative.empty() || relative.is_absolute())
+            return false;
+        const auto first = relative.begin();
+        if(first != relative.end() && *first == "..")
+            return false;
+        resolved_path = path;
+        return true;
+    }
+    catch(const std::filesystem::filesystem_error &)
+    {
+        return false;
+    }
+}
+}
 
 #ifndef _WIN32
 void SetConsoleTitle(const std::string &title)
@@ -191,14 +231,10 @@ int main(int argc, char *argv[])
 
     webServer.append_response("GET", "/refreshrules", "text/plain", [](RESPONSE_CALLBACK_ARGS) -> std::string
     {
-        if(!global.accessToken.empty())
+        if(!has_valid_access_token(request))
         {
-            std::string token = getUrlArg(request.argument, "token");
-            if(token != global.accessToken)
-            {
-                response.status_code = 403;
-                return "Forbidden\n";
-            }
+            response.status_code = 403;
+            return "Forbidden\n";
         }
         refreshRulesets(global.customRulesets, global.rulesetsContent);
         return "done\n";
@@ -206,14 +242,10 @@ int main(int argc, char *argv[])
 
     webServer.append_response("GET", "/readconf", "text/plain", [](RESPONSE_CALLBACK_ARGS) -> std::string
     {
-        if(!global.accessToken.empty())
+        if(!has_valid_access_token(request))
         {
-            std::string token = getUrlArg(request.argument, "token");
-            if(token != global.accessToken)
-            {
-                response.status_code = 403;
-                return "Forbidden\n";
-            }
+            response.status_code = 403;
+            return "Forbidden\n";
         }
         readConf();
         if(!global.updateRulesetOnRequest)
@@ -223,14 +255,10 @@ int main(int argc, char *argv[])
 
     webServer.append_response("POST", "/updateconf", "text/plain", [](RESPONSE_CALLBACK_ARGS) -> std::string
     {
-        if(!global.accessToken.empty())
+        if(!has_valid_access_token(request))
         {
-            std::string token = getUrlArg(request.argument, "token");
-            if(token != global.accessToken)
-            {
-                response.status_code = 403;
-                return "Forbidden\n";
-            }
+            response.status_code = 403;
+            return "Forbidden\n";
         }
         std::string type = getUrlArg(request.argument, "type");
         if(type == "form" || type == "direct")
@@ -251,7 +279,7 @@ int main(int argc, char *argv[])
 
     webServer.append_response("GET", "/flushcache", "text/plain", [](RESPONSE_CALLBACK_ARGS) -> std::string
     {
-        if(getUrlArg(request.argument, "token") != global.accessToken)
+        if(!has_valid_access_token(request))
         {
             response.status_code = 403;
             return "Forbidden";
@@ -284,7 +312,14 @@ int main(int argc, char *argv[])
 
         webServer.append_response("GET", "/getlocal", "text/plain;charset=utf-8", [](RESPONSE_CALLBACK_ARGS) -> std::string
         {
-            return fileGet(urlDecode(getUrlArg(request.argument, "path")));
+            const auto path = urlDecode(getUrlArg(request.argument, "path"));
+            std::filesystem::path resolved_path;
+            if(path.empty() || !resolve_path_within_root(global.basePath, path, resolved_path))
+            {
+                response.status_code = 403;
+                return "Forbidden\n";
+            }
+            return fileGet(resolved_path.string(), false);
         });
     }
 

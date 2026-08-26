@@ -1,6 +1,6 @@
 common:
-  api_mode: false
-  api_access_token: password
+  api_mode: true
+  api_access_token: ""
   default_url: []
   enable_insert: true
   insert_url: []
@@ -103,7 +103,7 @@ proxy_groups:
   - {import: snippets/groups.txt}
 
 template:
-  template_path: ""
+  template_path: templates
   globals:
   - {key: clash.http_port, value: 7890}
   - {key: clash.socks_port, value: 7891}
@@ -149,7 +149,7 @@ advanced:
   max_concurrent_threads: 2
   max_allowed_rulesets: 0
   max_allowed_rules: 0
-  max_allowed_download_size: 0
+  max_allowed_download_size: 16777216
   enable_cache: false
   cache_subscription: 60
   cache_config: 300

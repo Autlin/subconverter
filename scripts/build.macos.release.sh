@@ -11,8 +11,10 @@ brew reinstall rapidjson zlib pcre2 pkgconfig
 #make -j8 > /dev/null
 #cd ..
 
-git clone https://github.com/jbeder/yaml-cpp --depth=1
+git clone --no-checkout https://github.com/jbeder/yaml-cpp
 cd yaml-cpp
+git fetch origin e5fe9f2cddbd1a9a8b423bbe40cca661aec6208a
+git checkout --detach e5fe9f2cddbd1a9a8b423bbe40cca661aec6208a
 cmake -DCMAKE_BUILD_TYPE=Release -DYAML_CPP_BUILD_TESTS=OFF -DYAML_CPP_BUILD_TOOLS=OFF . > /dev/null
 make -j6 > /dev/null
 sudo make install > /dev/null
@@ -31,8 +33,10 @@ sudo install -m644 quickjs/quickjs.h quickjs/quickjs-libc.h /usr/local/include/q
 sudo install -m644 quickjspp.hpp /usr/local/include/
 cd ..
 
-git clone https://github.com/PerMalmberg/libcron --depth=1
+git clone --no-checkout https://github.com/PerMalmberg/libcron
 cd libcron
+git fetch origin ee34810b11bd23c8be637345532f91059b68b2d7
+git checkout --detach ee34810b11bd23c8be637345532f91059b68b2d7
 git submodule update --init
 cmake -DCMAKE_BUILD_TYPE=Release .
 make libcron -j6
@@ -43,8 +47,10 @@ sudo install -d /usr/local/include/date/
 sudo install -m644 libcron/externals/date/include/date/* /usr/local/include/date/
 cd ..
 
-git clone https://github.com/ToruNiina/toml11 --branch="v4.3.0" --depth=1
+git clone --no-checkout https://github.com/ToruNiina/toml11
 cd toml11
+git fetch origin 499be3c177bcf9b42848d5d9567153e4edfcbc8a
+git checkout --detach 499be3c177bcf9b42848d5d9567153e4edfcbc8a
 cmake -DCMAKE_CXX_STANDARD=11 .
 sudo make install -j6 > /dev/null
 cd ..
@@ -56,7 +62,8 @@ rm subconverter
 c++ -Xlinker -unexported_symbol -Xlinker "*" -o base/subconverter -framework CoreFoundation -framework Security $(find CMakeFiles/subconverter.dir/src/ -name "*.o") "$(brew --prefix zlib)/lib/libz.a" "$(brew --prefix pcre2)/lib/libpcre2-8.a" $(find . -name "*.a") -lcurl -O3
 
 python -m ensurepip
-sudo python -m pip install gitpython
+sudo python -m pip install --no-cache-dir \
+    GitPython==3.1.59 gitdb==4.0.12 smmap==5.0.3 typing-extensions==4.7.1
 python scripts/update_rules.py -c scripts/rules_config.conf
 
 cd base

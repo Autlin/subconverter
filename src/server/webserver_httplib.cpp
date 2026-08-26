@@ -26,6 +26,13 @@ static inline bool is_request_header_blacklisted(const std::string &header)
     return false;
 }
 
+static inline bool is_request_header_safe_to_forward(const std::string &header)
+{
+    const auto lower = toLower(header);
+    return lower == "user-agent" || lower == "accept" || lower == "accept-language" ||
+           lower == "referer" || lower == "x-requested-with" || lower == "content-type";
+}
+
 void WebServer::stop_web_server()
 {
     SERVER_EXIT_FLAG = true;
@@ -43,7 +50,8 @@ static httplib::Server::Handler makeHandler(const responseRoute &rr)
         {
             if (startsWith(h.first, "LOCAL_")
             || startsWith(h.first, "REMOTE_")
-            || is_request_header_blacklisted(h.first))
+            || is_request_header_blacklisted(h.first)
+            || !is_request_header_safe_to_forward(h.first))
             {
                 continue;
             }

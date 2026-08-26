@@ -4,6 +4,11 @@
 //#include <mutex>
 #include <thread>
 #include <atomic>
+#include <algorithm>
+#include <cctype>
+#include <cstdlib>
+#include <cstring>
+#include <vector>
 
 #include <curl/curl.h>
 
@@ -16,6 +21,7 @@
 #include "utils/urlencode.h"
 #include "version.h"
 #include "webget.h"
+#include "server/socket.h"
 
 #ifdef _WIN32
 #ifndef _stat
@@ -32,6 +38,176 @@ RWLock cache_rw_lock;
 
 //std::string user_agent_str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/74.0.3729.169 Safari/537.36";
 static auto user_agent_str = "subconverter/" VERSION " cURL/" LIBCURL_VERSION;
+
+namespace
+{
+struct HttpTarget
+{
+    std::string scheme;
+    std::string host;
+    std::string port;
+};
+
+static bool parse_http_target(const std::string &url, HttpTarget &target)
+{
+    const auto scheme_end = url.find("://");
+    if(scheme_end == std::string::npos)
+        return false;
+    target.scheme = toLower(url.substr(0, scheme_end));
+    if(target.scheme != "http" && target.scheme != "https")
+        return false;
+    const auto authority_start = scheme_end + 3;
+    const auto authority_end = url.find_first_of("/?#", authority_start);
+    const auto authority = url.substr(authority_start, authority_end == std::string::npos ? std::string::npos : authority_end - authority_start);
+    if(authority.empty() || authority.find('@') != std::string::npos)
+        return false;
+
+    if(authority.front() == '[')
+    {
+        const auto close = authority.find(']');
+        if(close == std::string::npos || close == 1)
+            return false;
+        target.host = authority.substr(1, close - 1);
+        if(close + 1 < authority.size())
+        {
+            if(authority[close + 1] != ':')
+                return false;
+            target.port = authority.substr(close + 2);
+        }
+    }
+    else
+    {
+        const auto colon = authority.rfind(':');
+        if(colon != std::string::npos)
+        {
+            if(authority.find(':') != colon)
+                return false;
+            target.host = authority.substr(0, colon);
+            target.port = authority.substr(colon + 1);
+        }
+        else
+            target.host = authority;
+    }
+    if(target.host.empty())
+        return false;
+    if(target.port.empty())
+        target.port = target.scheme == "https" ? "443" : "80";
+    char *end = nullptr;
+    const auto port = std::strtol(target.port.c_str(), &end, 10);
+    return end != target.port.c_str() && *end == '\0' && port > 0 && port <= 65535;
+}
+
+static bool forbidden_ipv4(const in_addr &addr)
+{
+    const uint32_t value = ntohl(addr.s_addr);
+    const auto in_range = [value](uint32_t first, uint32_t last) { return value >= first && value <= last; };
+    return in_range(0x00000000U, 0x00FFFFFFU) ||       // unspecified/current network
+           in_range(0x0A000000U, 0x0AFFFFFFU) ||       // RFC1918
+           in_range(0x64400000U, 0x647FFFFFU) ||       // carrier-grade NAT
+           in_range(0x7F000000U, 0x7FFFFFFFU) ||       // loopback
+           in_range(0xA9FE0000U, 0xA9FEFFFFU) ||       // link-local / cloud metadata
+           in_range(0xAC100000U, 0xAC1FFFFFU) ||       // RFC1918
+           in_range(0xC0000000U, 0xC00000FFU) ||       // IETF protocol assignments
+           in_range(0xC0000200U, 0xC00002FFU) ||       // TEST-NET-1
+           in_range(0xC0A80000U, 0xC0A8FFFFU) ||       // RFC1918
+           in_range(0xC6120000U, 0xC613FFFFU) ||       // TEST-NET-2
+           in_range(0xCB007100U, 0xCB0071FFU) ||       // TEST-NET-3
+           in_range(0xC6336400U, 0xC63364FFU) ||       // benchmark
+           value >= 0xE0000000U;                       // multicast/reserved
+}
+
+static bool forbidden_ipv6(const in6_addr &addr)
+{
+    const auto *b = reinterpret_cast<const unsigned char *>(&addr);
+    if((b[0] == 0 && std::all_of(b + 1, b + 16, [](unsigned char x) { return x == 0; })) ||
+       (b[0] == 0 && b[1] == 0 && b[2] == 0 && b[3] == 0 && b[4] == 0 && b[5] == 0 &&
+        b[6] == 0 && b[7] == 0 && b[8] == 0 && b[9] == 0 && b[10] == 0 && b[11] == 0 &&
+        b[12] == 0 && b[13] == 0 && b[14] == 0 && b[15] == 1))
+        return true;
+    if((b[0] & 0xFE) == 0xFC || (b[0] == 0xFE && (b[1] & 0xC0) == 0x80) || (b[0] & 0xFF) == 0xFF)
+        return true; // ULA, link-local, multicast
+    if(std::all_of(b, b + 10, [](unsigned char x) { return x == 0; }) && b[10] == 0xFF && b[11] == 0xFF)
+    {
+        in_addr mapped{};
+        std::memcpy(&mapped.s_addr, b + 12, sizeof(mapped.s_addr));
+        return forbidden_ipv4(mapped);
+    }
+    return false;
+}
+
+static bool resolve_safe_target(const std::string &url, std::vector<std::string> &resolve_entries)
+{
+    HttpTarget target;
+    if(!parse_http_target(url, target))
+        return false;
+    addrinfo hints{};
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_family = AF_UNSPEC;
+    addrinfo *result = nullptr;
+    if(getaddrinfo(target.host.c_str(), target.port.c_str(), &hints, &result) != 0 || result == nullptr)
+        return false;
+    bool safe = true;
+    for(auto *cur = result; cur; cur = cur->ai_next)
+    {
+        char address[INET6_ADDRSTRLEN]{};
+        if(cur->ai_family == AF_INET)
+        {
+            const auto *a = reinterpret_cast<const sockaddr_in *>(cur->ai_addr);
+            safe = safe && !forbidden_ipv4(a->sin_addr);
+            if(inet_ntop(AF_INET, &a->sin_addr, address, sizeof(address)))
+                resolve_entries.emplace_back(target.host + ":" + target.port + ":" + address);
+        }
+        else if(cur->ai_family == AF_INET6)
+        {
+            const auto *a = reinterpret_cast<const sockaddr_in6 *>(cur->ai_addr);
+            safe = safe && !forbidden_ipv6(a->sin6_addr);
+            if(inet_ntop(AF_INET6, &a->sin6_addr, address, sizeof(address)))
+                resolve_entries.emplace_back(target.host + ":" + target.port + ":[" + address + "]");
+        }
+    }
+    freeaddrinfo(result);
+    return safe && !resolve_entries.empty();
+}
+
+static bool is_safe_forward_header(const std::string &name)
+{
+    const auto lower = toLower(name);
+    return lower == "user-agent" || lower == "accept" || lower == "accept-language" ||
+           lower == "referer" || lower == "x-requested-with" || lower == "content-type";
+}
+
+static std::string redirect_target(const std::string &current, const std::string &location)
+{
+    if(location.empty())
+        return {};
+    if(startsWith(toLower(location), "http://") || startsWith(toLower(location), "https://"))
+        return location;
+    HttpTarget current_target;
+    if(!parse_http_target(current, current_target))
+        return {};
+    const auto authority_end = current.find_first_of("/?#", current.find("://") + 3);
+    const auto origin = current.substr(0, authority_end == std::string::npos ? current.size() : authority_end);
+    if(startsWith(location, "//"))
+        return current_target.scheme + ":" + location;
+    if(location.front() == '/')
+        return origin + location;
+    const auto path_end = current.find_last_of('/');
+    return current.substr(0, path_end == std::string::npos ? current.size() : path_end + 1) + location;
+}
+
+static std::string location_from_headers(const std::string &headers)
+{
+    auto lines = split(headers, "\r\n");
+    for(const auto &line : lines)
+    {
+        const auto colon = line.find(':');
+        if(colon == std::string::npos || toLower(trim(line.substr(0, colon))) != "location")
+            continue;
+        return trim(line.substr(colon + 1));
+    }
+    return {};
+}
+}
 
 struct curl_progress_data
 {
@@ -127,12 +303,13 @@ static inline void curl_set_common_options(CURL *curl_handle, const char *url, c
     curl_easy_setopt(curl_handle, CURLOPT_DEBUGFUNCTION, logger);
     curl_easy_setopt(curl_handle, CURLOPT_NOPROGRESS, 0L);
     curl_easy_setopt(curl_handle, CURLOPT_NOSIGNAL, 1L);
-    curl_easy_setopt(curl_handle, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl_handle, CURLOPT_FOLLOWLOCATION, 0L);
     curl_easy_setopt(curl_handle, CURLOPT_MAXREDIRS, 20L);
-    curl_easy_setopt(curl_handle, CURLOPT_SSL_VERIFYPEER, 0L);
-    curl_easy_setopt(curl_handle, CURLOPT_SSL_VERIFYHOST, 0L);
+    curl_easy_setopt(curl_handle, CURLOPT_SSL_VERIFYPEER, 1L);
+    curl_easy_setopt(curl_handle, CURLOPT_SSL_VERIFYHOST, 2L);
+    curl_easy_setopt(curl_handle, CURLOPT_PROTOCOLS, CURLPROTO_HTTP | CURLPROTO_HTTPS);
+    curl_easy_setopt(curl_handle, CURLOPT_REDIR_PROTOCOLS, CURLPROTO_HTTP | CURLPROTO_HTTPS);
     curl_easy_setopt(curl_handle, CURLOPT_TIMEOUT, 15L);
-    curl_easy_setopt(curl_handle, CURLOPT_COOKIEFILE, "");
     if(data)
     {
         if(data->size_limit)
@@ -148,7 +325,10 @@ static int curlGet(const FetchArgument &argument, FetchResult &result)
     CURL *curl_handle;
     std::string *data = result.content, new_url = argument.url;
     curl_slist *header_list = nullptr;
+    curl_slist *resolve_list = nullptr;
+    bool cors_request = false;
     defer(curl_slist_free_all(header_list);)
+    defer(curl_slist_free_all(resolve_list);)
     long retVal;
 
     curl_init();
@@ -158,7 +338,7 @@ static int curlGet(const FetchArgument &argument, FetchResult &result)
     {
         if(startsWith(argument.proxy, "cors:"))
         {
-            header_list = curl_slist_append(header_list, "X-Requested-With: subconverter " VERSION);
+            cors_request = true;
             new_url = argument.proxy.substr(5) + argument.url;
         }
         else
@@ -167,21 +347,39 @@ static int curlGet(const FetchArgument &argument, FetchResult &result)
     curl_progress_data limit;
     limit.size_limit = global.maxAllowedDownloadSize;
     curl_set_common_options(curl_handle, new_url.data(), &limit);
-    header_list = curl_slist_append(header_list, "Content-Type: application/json;charset=utf-8");
-    if(argument.request_headers)
+
+    auto rebuild_headers = [&](const std::string &request_url)
     {
-        for(auto &x : *argument.request_headers)
+        curl_slist_free_all(header_list);
+        header_list = nullptr;
+        if(cors_request)
+            header_list = curl_slist_append(header_list, "X-Requested-With: subconverter " VERSION);
+        header_list = curl_slist_append(header_list, "Content-Type: application/json;charset=utf-8");
+
+        HttpTarget target;
+        const bool trusted_github_target = parse_http_target(request_url, target) &&
+            target.scheme == "https" && toLower(target.host) == "api.github.com";
+        bool has_user_agent = false;
+        if(argument.request_headers)
         {
-            auto header = x.first + ": " + x.second;
-            header_list = curl_slist_append(header_list, header.data());
+            for(auto &x : *argument.request_headers)
+            {
+                const auto lower_name = toLower(x.first);
+                const bool trusted_github_auth = argument.allow_authorization &&
+                    lower_name == "authorization" && trusted_github_target;
+                if(lower_name == "cookie" || (!is_safe_forward_header(x.first) && !trusted_github_auth))
+                    continue;
+                auto header = x.first + ": " + x.second;
+                header_list = curl_slist_append(header_list, header.data());
+                has_user_agent = has_user_agent || lower_name == "user-agent";
+            }
         }
-        if(!argument.request_headers->contains("User-Agent"))
+        if(!has_user_agent)
             curl_easy_setopt(curl_handle, CURLOPT_USERAGENT, user_agent_str);
-    }
-    header_list = curl_slist_append(header_list, "SubConverter-Request: 1");
-    header_list = curl_slist_append(header_list, "SubConverter-Version: " VERSION);
-    if(header_list)
+        header_list = curl_slist_append(header_list, "SubConverter-Request: 1");
+        header_list = curl_slist_append(header_list, "SubConverter-Version: " VERSION);
         curl_easy_setopt(curl_handle, CURLOPT_HTTPHEADER, header_list);
+    };
 
     if(result.content)
     {
@@ -197,13 +395,6 @@ static int curlGet(const FetchArgument &argument, FetchResult &result)
     }
     else
         curl_easy_setopt(curl_handle, CURLOPT_HEADERFUNCTION, dummy_writer);
-
-    if(argument.cookies)
-    {
-        string_array cookies = split(*argument.cookies, "\r\n");
-        for(auto &x : cookies)
-            curl_easy_setopt(curl_handle, CURLOPT_COOKIELIST, x.c_str());
-    }
 
     switch(argument.method)
     {
@@ -230,12 +421,46 @@ static int curlGet(const FetchArgument &argument, FetchResult &result)
         break;
     }
 
-    unsigned int fail_count = 0, max_fails = 1;
+    unsigned int fail_count = 0, max_fails = 1, redirect_count = 0;
     while(true)
     {
+        std::vector<std::string> resolve_entries;
+        if(!resolve_safe_target(new_url, resolve_entries))
+        {
+            retVal = CURLE_COULDNT_CONNECT;
+            break;
+        }
+        curl_slist_free_all(resolve_list);
+        resolve_list = nullptr;
+        for(const auto &entry : resolve_entries)
+            resolve_list = curl_slist_append(resolve_list, entry.c_str());
+        curl_easy_setopt(curl_handle, CURLOPT_RESOLVE, resolve_list);
+        curl_easy_setopt(curl_handle, CURLOPT_URL, new_url.c_str());
+        rebuild_headers(new_url);
+        if(result.content)
+            result.content->clear();
+        if(result.response_headers)
+            result.response_headers->clear();
         retVal = curl_easy_perform(curl_handle);
         if(retVal == CURLE_OK || max_fails <= fail_count || global.APIMode)
+        {
+            long code = 0;
+            curl_easy_getinfo(curl_handle, CURLINFO_HTTP_CODE, &code);
+            if(code >= 300 && code < 400 && redirect_count < 20)
+            {
+                char *effective_redirect = nullptr;
+                curl_easy_getinfo(curl_handle, CURLINFO_REDIRECT_URL, &effective_redirect);
+                const auto location = effective_redirect ? std::string(effective_redirect) : location_from_headers(result.response_headers ? *result.response_headers : "");
+                const auto next_url = redirect_target(new_url, location);
+                if(!next_url.empty())
+                {
+                    new_url = next_url;
+                    redirect_count++;
+                    continue;
+                }
+            }
             break;
+        }
         else
             fail_count++;
     }
@@ -372,20 +597,20 @@ void flushCache()
     operateFiles("cache", [](const std::string &file){ remove(("cache/" + file).data()); return 0; });
 }
 
-int webPost(const std::string &url, const std::string &data, const std::string &proxy, const string_icase_map &request_headers, std::string *retData)
+int webPost(const std::string &url, const std::string &data, const std::string &proxy, const string_icase_map &request_headers, std::string *retData, bool allow_authorization)
 {
     //return curlPost(url, data, proxy, request_headers, retData);
     int return_code = 0;
-    FetchArgument argument {HTTP_POST, url, proxy, &data, &request_headers, nullptr, 0, true};
+    FetchArgument argument {HTTP_POST, url, proxy, &data, &request_headers, nullptr, 0, true, allow_authorization};
     FetchResult fetch_res {&return_code, retData, nullptr, nullptr};
     return webGet(argument, fetch_res);
 }
 
-int webPatch(const std::string &url, const std::string &data, const std::string &proxy, const string_icase_map &request_headers, std::string *retData)
+int webPatch(const std::string &url, const std::string &data, const std::string &proxy, const string_icase_map &request_headers, std::string *retData, bool allow_authorization)
 {
     //return curlPatch(url, data, proxy, request_headers, retData);
     int return_code = 0;
-    FetchArgument argument {HTTP_PATCH, url, proxy, &data, &request_headers, nullptr, 0, true};
+    FetchArgument argument {HTTP_PATCH, url, proxy, &data, &request_headers, nullptr, 0, true, allow_authorization};
     FetchResult fetch_res {&return_code, retData, nullptr, nullptr};
     return webGet(argument, fetch_res);
 }

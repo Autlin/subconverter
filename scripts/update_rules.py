@@ -3,6 +3,7 @@ import configparser
 import glob
 import logging
 import os
+import re
 import shutil
 import stat
 from git import InvalidGitRepositoryError, Repo
@@ -74,10 +75,14 @@ def main():
         try:
             if commit is not None:
                 logging.info(f"checking out to commit {commit}")
-                r.git.checkout(commit)
+                if re.fullmatch(r"[0-9a-fA-F]{40}", commit) is None:
+                    raise ValueError(f"commit must be a full 40-character SHA: {commit}")
+                r.git.fetch("origin", commit)
+                r.git.checkout("--detach", commit)
             elif branch is not None:
                 logging.info(f"checking out to branch {branch}")
-                r.git.checkout(branch)
+                r.git.fetch("origin", branch)
+                r.git.checkout("--detach", f"origin/{branch}")
             else:
                 logging.info(f"checking out to default branch")
                 r.active_branch.checkout()
