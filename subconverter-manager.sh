@@ -37,6 +37,7 @@ PRESERVE_DIRS=(
 TEMP_DIR=""
 LOCK_FILE=""
 ARCHIVE_NAME=""
+MACHINE_ARCH=""
 RELEASE_TAG=""
 RELEASE_JSON=""
 ARCHIVE_URL=""
@@ -173,10 +174,9 @@ install_dependencies() {
 }
 
 detect_architecture() {
-    local machine=""
-    machine="$(uname -m)"
+    MACHINE_ARCH="$(uname -m)"
 
-    case "${machine}" in
+    case "${MACHINE_ARCH}" in
         x86_64 | amd64)
             ARCHIVE_NAME="subconverter_linux_amd64.tar.gz"
             ;;
@@ -184,11 +184,11 @@ detect_architecture() {
             ARCHIVE_NAME="subconverter_linux_arm64.tar.gz"
             ;;
         *)
-            fail "不支持的 CPU 架构: ${machine}"
+            fail "不支持的 CPU 架构: ${MACHINE_ARCH}；当前发布仅支持 Linux amd64 和 arm64"
             ;;
     esac
 
-    log "检测到架构 ${machine}，将使用 ${ARCHIVE_NAME}"
+    log "检测到架构 ${MACHINE_ARCH}，将使用 ${ARCHIVE_NAME}"
 }
 
 check_disk_space() {
@@ -265,16 +265,48 @@ fetch_release_metadata() {
         api_url="https://api.github.com/repos/${REPOSITORY}/releases/latest"
     fi
 
-    github_curl \
+    local status_file="${TEMP_DIR}/release.http_status"
+    local api_status=""
+    local api_message=""
+    local available_assets=""
+
+    if ! github_curl \
         --header 'Accept: application/vnd.github+json' \
         --header 'X-GitHub-Api-Version: 2022-11-28' \
-        "${api_url}" >"${RELEASE_JSON}"
+        --output "${RELEASE_JSON}" \
+        --write-out '%{http_code}' \
+        "${api_url}" >"${status_file}"; then
+        api_status="$(<"${status_file}")"
+        api_message="$(jq -r '.message // empty' "${RELEASE_JSON}" 2>/dev/null || true)"
+        fail "GitHub Release API 请求失败（HTTP ${api_status:-unknown}${api_message:+，${api_message}}）；请检查仓库、版本或网络"
+    fi
 
-    RELEASE_TAG="$(jq -er '.tag_name' "${RELEASE_JSON}")"
+    api_status="$(<"${status_file}")"
+    if [[ ! "${api_status}" =~ ^2[0-9][0-9]$ ]]; then
+        api_message="$(jq -r '.message // empty' "${RELEASE_JSON}" 2>/dev/null || true)"
+        fail "GitHub Release API 返回 HTTP ${api_status:-unknown}${api_message:+：${api_message}}"
+    fi
+
+    if ! jq -e 'type == "object" and (.tag_name | type == "string") and (.assets | type == "array")' \
+        "${RELEASE_JSON}" >/dev/null 2>&1; then
+        fail "GitHub Release API 返回的内容不是有效 Release JSON（${api_url}）"
+    fi
+
+    RELEASE_TAG="$(jq -r '.tag_name' "${RELEASE_JSON}")"
     [[ "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "发布版本号格式无效: ${RELEASE_TAG}"
 
-    ARCHIVE_URL="$(jq -er --arg name "${ARCHIVE_NAME}" '.assets[] | select(.name == $name) | .browser_download_url' "${RELEASE_JSON}")"
-    CHECKSUM_URL="$(jq -er '.assets[] | select(.name == "SHA256SUMS") | .browser_download_url' "${RELEASE_JSON}")"
+    available_assets="$(jq -r '[.assets[] | .name // empty] | join(", ")' "${RELEASE_JSON}")"
+    if ! ARCHIVE_URL="$(jq -r --arg name "${ARCHIVE_NAME}" \
+        '[.assets[] | select(.name == $name) | .browser_download_url // empty][0] // empty' \
+        "${RELEASE_JSON}")" || [[ -z "${ARCHIVE_URL}" ]]; then
+        fail "Release ${RELEASE_TAG} 中没有当前架构 ${MACHINE_ARCH:-unknown} 所需资产 ${ARCHIVE_NAME}；可用资产: ${available_assets:-无}"
+    fi
+
+    if ! CHECKSUM_URL="$(jq -r \
+        '[.assets[] | select(.name == "SHA256SUMS") | .browser_download_url // empty][0] // empty' \
+        "${RELEASE_JSON}")" || [[ -z "${CHECKSUM_URL}" ]]; then
+        fail "Release ${RELEASE_TAG} 缺少 SHA256SUMS；可用资产: ${available_assets:-无}"
+    fi
 
     log "目标版本: ${RELEASE_TAG}"
 }
