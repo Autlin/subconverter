@@ -30,7 +30,7 @@ For running this docker, simply use the following commands:
 docker run -d --restart=always -p 25500:25500 asdlokj1qpi23/subconverter:latest
 # then check its status
 curl http://localhost:25500/version
-# if you see `subconverter vx.x.x backend` then the container is up and running
+# if you see `SubConverter Mi vx.x.x Backend` then the container is up and running
 ```
 Or run in docker-compose:
 ```yaml

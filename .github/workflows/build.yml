@@ -1,145 +1,141 @@
-name: GitHub CI
+name: Linux Release
+
 on:
   workflow_dispatch:
+    inputs:
+      publish_release:
+        description: Publish the selected tag as a GitHub Release
+        required: true
+        default: false
+        type: boolean
 
 concurrency:
   group: ${{ github.ref }}-${{ github.workflow }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   linux_build:
     strategy:
+      fail-fast: false
       matrix:
         include:
-          - arch: x86
-            artifact: subconverter_linux32
-            os: ubuntu-latest
           - arch: amd64
-            artifact: subconverter_linux64
+            artifact: subconverter_linux_amd64
+            expected_machine: x86-64
+            image_arch: amd64
             os: ubuntu-latest
-          - arch: armv7
-            artifact: subconverter_armv7
-            os: ubuntu-latest
-          - arch: aarch64
-            artifact: subconverter_aarch64
-            os: ubuntu-latest
+          - arch: arm64
+            artifact: subconverter_linux_arm64
+            expected_machine: ARM aarch64
+            image_arch: aarch64
+            os: ubuntu-24.04-arm
     runs-on: ${{ matrix.os }}
     name: Linux ${{ matrix.arch }} Build
     steps:
-      - name: Checkout base
+      - name: Checkout source
         uses: actions/checkout@v4
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-      - name: Add commit id into version
-        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
-        run: SHA=$(git rev-parse --short HEAD) && sed -i 's/\(v[0-9]\.[0-9]\.[0-9]\)/\1-'"$SHA"'/' src/version.h
-      - name: Build
-        run: docker run --rm -v $GITHUB_WORKSPACE:/root/workdir multiarch/alpine:${{ matrix.arch }}-latest-stable /bin/sh -c "apk add bash git nodejs npm && cd /root/workdir && chmod +x scripts/build.alpine.release.sh && bash scripts/build.alpine.release.sh"
-      - name: Upload
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.artifact }}
-          path: subconverter/
-      - name: Package Release
-        if: ${{ github.event_name != 'pull_request' && startsWith(github.ref, 'refs/tags/') }}
-        run: tar czf ${{ matrix.artifact }}.tar.gz subconverter
-      - name: Draft Release
-        if: ${{ github.event_name != 'pull_request' && startsWith(github.ref, 'refs/tags/') }}
-        uses: softprops/action-gh-release@v2
-        with:
-          files: ${{ matrix.artifact }}.tar.gz
-          draft: true
 
-  macos_build:
-    strategy:
-      matrix:
-        include:
-          - arch: x86
-            artifact: subconverter_darwin64
-            os: macos-15
-          - arch: arm
-            artifact: subconverter_darwinarm
-            os: macos-15
-    runs-on: ${{ matrix.os }}
-    name: macOS ${{ matrix.arch }} Build
-    steps:
-      - name: Checkout base
-        uses: actions/checkout@v4
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - name: Add commit id into version
-        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
-        run: SHA=$(git rev-parse --short HEAD) && sed -i -e 's/\(v[0-9]\.[0-9]\.[0-9]\)/\1-'"$SHA"'/' src/version.h
       - name: Build
-        run: bash scripts/build.macos.release.sh
-      - name: Upload
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.artifact }}
-          path: subconverter/
-      - name: Package Release
-        if: ${{ github.event_name != 'pull_request' && startsWith(github.ref, 'refs/tags/') }}
-        run: tar czf ${{ matrix.artifact }}.tar.gz subconverter
-      - name: Draft Release
-        if: ${{ github.event_name != 'pull_request' && startsWith(github.ref, 'refs/tags/') }}
-        uses: softprops/action-gh-release@v2
-        with:
-          files: ${{ matrix.artifact }}.tar.gz
-          draft: true
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/root/workdir" \
+            "multiarch/alpine:${{ matrix.image_arch }}-latest-stable" \
+            /bin/sh -c "apk add bash git nodejs npm && cd /root/workdir && chmod +x scripts/build.alpine.release.sh && bash scripts/build.alpine.release.sh"
 
-  windows_build:
-    strategy:
-      matrix:
-        include:
-          - arch: x86
-            artifact: subconverter_win32
-            env: i686
-            msystem: MINGW32
-          - arch: amd64
-            artifact: subconverter_win64
-            env: x86_64
-            msystem: MINGW64
-    runs-on: windows-latest
-    name: Windows ${{ matrix.arch }} Build
-    defaults:
-      run:
-        shell: msys2 {0}
-    steps:
-      - name: Checkout base
-        uses: actions/checkout@v4
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '16'
-      - name: Setup MSYS2
-        uses: msys2/setup-msys2@v2
-        with:
-          update: true
-          install: base-devel git mingw-w64-${{ matrix.env }}-gcc mingw-w64-${{ matrix.env }}-cmake mingw-w64-${{ matrix.env }}-pcre2 patch
-          msystem: ${{ matrix.msystem }}
-          path-type: inherit
-      - name: Add commit id into version
-        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
-        run: SHA=$(git rev-parse --short HEAD) && sed -i 's/\(v[0-9]\.[0-9]\.[0-9]\)/\1-'"$SHA"'/' src/version.h
-      - name: Build
-        run: bash scripts/build.windows.release.sh
-      - name: Upload
+      - name: Verify architecture, startup, and version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^#define VERSION "\(.*\)"/\1/p' src/version.h)"
+          expected="SubConverter Mi ${version} Backend"
+
+          file_output="$(file subconverter/subconverter)"
+          printf '%s\n' "${file_output}"
+          grep --fixed-strings --quiet "${{ matrix.expected_machine }}" <<<"${file_output}"
+          pushd subconverter >/dev/null
+          ./subconverter >../subconverter-startup.log 2>&1 &
+          pid=$!
+          trap 'kill "${pid}" 2>/dev/null || true' EXIT
+
+          response=""
+          for _ in $(seq 1 30); do
+            if response="$(curl --fail --silent --show-error http://127.0.0.1:25500/version)"; then
+              break
+            fi
+            sleep 1
+          done
+
+          if [[ "${response}" != "${expected}" ]]; then
+            cat ../subconverter-startup.log
+            printf 'Expected: %s\nActual: %s\n' "${expected}" "${response}"
+            exit 1
+          fi
+
+          kill "${pid}"
+          wait "${pid}" || true
+          trap - EXIT
+          rm -f pref.toml
+          popd >/dev/null
+          printf 'Verified: %s\n' "${response}"
+
+      - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
           path: subconverter/
-      - name: Package Release
-        if: ${{ github.event_name != 'pull_request' && startsWith(github.ref, 'refs/tags/') }}
-        run: 7z a ${{ matrix.artifact }}.7z subconverter/
-      - name: Draft Release
-        if: ${{ github.event_name != 'pull_request' && startsWith(github.ref, 'refs/tags/') }}
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    if: ${{ inputs.publish_release && startsWith(github.ref, 'refs/tags/v') }}
+    needs: linux_build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout version metadata
+        uses: actions/checkout@v4
+
+      - name: Verify tag matches local version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^#define VERSION "\(.*\)"/\1/p' src/version.h)"
+          test "${version}" = "${GITHUB_REF_NAME}"
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+          pattern: subconverter_linux_*
+
+      - name: Package release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p package
+          for arch in amd64 arm64; do
+            artifact="subconverter_linux_${arch}"
+            rm -rf package/subconverter
+            cp -R "release-artifacts/${artifact}" package/subconverter
+            tar czf "${artifact}.tar.gz" -C package subconverter
+          done
+          sha256sum subconverter_linux_amd64.tar.gz subconverter_linux_arm64.tar.gz > SHA256SUMS
+
+      - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ matrix.artifact }}.7z
-          draft: true
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          files: |
+            subconverter_linux_amd64.tar.gz
+            subconverter_linux_arm64.tar.gz
+            SHA256SUMS
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          make_latest: true
+          fail_on_unmatched_files: true

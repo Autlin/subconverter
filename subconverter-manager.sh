@@ -178,16 +178,10 @@ detect_architecture() {
 
     case "${machine}" in
         x86_64 | amd64)
-            ARCHIVE_NAME="subconverter_linux64.tar.gz"
-            ;;
-        i386 | i486 | i586 | i686)
-            ARCHIVE_NAME="subconverter_linux32.tar.gz"
-            ;;
-        armv7l | armv7)
-            ARCHIVE_NAME="subconverter_armv7.tar.gz"
+            ARCHIVE_NAME="subconverter_linux_amd64.tar.gz"
             ;;
         aarch64 | arm64)
-            ARCHIVE_NAME="subconverter_aarch64.tar.gz"
+            ARCHIVE_NAME="subconverter_linux_arm64.tar.gz"
             ;;
         *)
             fail "不支持的 CPU 架构: ${machine}"
@@ -739,7 +733,7 @@ health_check() {
         if systemctl is-active --quiet "${SERVICE_NAME}.service"; then
             response="$(curl --noproxy '*' --fail --silent --show-error --max-time 3 \
                 "http://127.0.0.1:${port}/version" 2>/dev/null || true)"
-            if [[ "${response}" == *subconverter* ]]; then
+            if [[ "${response}" =~ ^SubConverter\ Mi\ v[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9._-]+)?\ Backend$ ]]; then
                 if [[ -z "${expected_tag}" || "${response}" == *"${expected_tag}"* ]]; then
                     log "健康检查通过: ${response}"
                     return 0
