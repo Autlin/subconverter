@@ -89,14 +89,20 @@ require_root() {
 }
 
 initialize_logging() {
-    install -d -m 0755 "$(dirname "${LOG_FILE}")"
+    local log_directory=""
+    log_directory="$(dirname "${LOG_FILE}")"
+    if [[ ! -d "${log_directory}" ]]; then
+        install -d -m 0755 "${log_directory}"
+    fi
     touch "${LOG_FILE}"
     chmod 0600 "${LOG_FILE}"
     exec > >(tee -a "${LOG_FILE}") 2>&1
 }
 
 acquire_lock() {
-    install -d -m 0755 /run/lock
+    if [[ ! -d /run/lock ]]; then
+        install -d -m 0755 /run/lock
+    fi
     LOCK_FILE="/run/lock/${SERVICE_NAME}-manager.lock"
     exec 9>"${LOCK_FILE}"
     if ! flock -n 9; then
@@ -196,7 +202,9 @@ check_disk_space() {
     local available_kb=""
 
     parent="$(dirname "${INSTALL_ROOT}")"
-    install -d -m 0755 "${parent}"
+    if [[ ! -d "${parent}" ]]; then
+        install -d -m 0755 "${parent}"
+    fi
     available_kb="$(df -Pk "${parent}" | awk 'NR == 2 {print $4}')"
     [[ "${available_kb}" =~ ^[0-9]+$ ]] || fail "无法读取磁盘剩余空间"
     ((available_kb >= 204800)) || fail "磁盘空间不足，至少需要 200 MB 可用空间"
@@ -517,8 +525,12 @@ generate_token() {
 
 ensure_environment_file() {
     local preserve_source="${1:-}"
+    local environment_directory=""
 
-    install -d -m 0755 "$(dirname "${ENV_FILE}")"
+    environment_directory="$(dirname "${ENV_FILE}")"
+    if [[ ! -d "${environment_directory}" ]]; then
+        install -d -m 0755 "${environment_directory}"
+    fi
 
     if [[ -f "${ENV_FILE}" ]]; then
         HAD_ENV_FILE=1
@@ -676,7 +688,7 @@ configured_port() {
                     section && /^[[:space:]]*port[[:space:]]*=/ {
                         value = $0
                         sub(/^[^=]*=[[:space:]]*/, "", value)
-                        gsub(/[[:space:]\"\047]/, "", value)
+                        gsub(/[[:space:]"\047]/, "", value)
                         print value
                         exit
                     }
@@ -691,7 +703,7 @@ configured_port() {
                     section && /^[[:space:]]+port:[[:space:]]*/ {
                         value = $0
                         sub(/^[[:space:]]*port:[[:space:]]*/, "", value)
-                        gsub(/[[:space:]\"\047]/, "", value)
+                        gsub(/[[:space:]"\047]/, "", value)
                         print value
                         exit
                     }

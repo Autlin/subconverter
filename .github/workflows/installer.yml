@@ -146,6 +146,7 @@ jobs:
           install_root=/opt/subconverter-ci
           environment_file=/etc/default/subconverter-ci
           log_file=/tmp/subconverter-ci-manager.log
+          tmp_mode_before="$(stat -c '%a' /tmp)"
 
           printf 'PORT=28080\nAPI_MODE=true\nAPI_TOKEN=installer-ci\n' |
             sudo tee "${environment_file}" >/dev/null
@@ -191,6 +192,7 @@ jobs:
 
           curl --fail --silent --show-error http://127.0.0.1:28081/version | grep -q 'subconverter'
           systemctl is-active --quiet "${service_name}.service"
+          test "$(stat -c '%a' /tmp)" = "${tmp_mode_before}"
 
       - name: Verify failed activation rollback
         run: |
