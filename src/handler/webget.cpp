@@ -110,7 +110,6 @@ static bool forbidden_ipv4(const in_addr &addr)
            in_range(0xC0000000U, 0xC00000FFU) ||       // IETF protocol assignments
            in_range(0xC0000200U, 0xC00002FFU) ||       // TEST-NET-1
            in_range(0xC0A80000U, 0xC0A8FFFFU) ||       // RFC1918
-           in_range(0xC6120000U, 0xC613FFFFU) ||       // TEST-NET-2
            in_range(0xCB007100U, 0xCB0071FFU) ||       // TEST-NET-3
            in_range(0xC6336400U, 0xC63364FFU) ||       // benchmark
            value >= 0xE0000000U;                       // multicast/reserved

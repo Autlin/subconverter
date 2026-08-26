@@ -1200,6 +1200,11 @@ int loadExternalTOML(toml::value &root, ExternalConfig &ext)
 int loadExternalConfig(std::string &path, ExternalConfig &ext)
 {
     std::string base_content, proxy = parseProxy(global.proxyConfig), config = fetchFile(path, proxy, global.cacheConfig);
+    if(trim(config).empty())
+    {
+        writeLog(0, "External configuration is empty or unavailable. Check its path, URL, DNS, and proxy settings.", LOG_LEVEL_ERROR);
+        return -1;
+    }
     if(render_template(config, *ext.tpl_args, base_content, global.templatePath) != 0)
         base_content = config;
 
