@@ -48,7 +48,6 @@ LAST_BACKUP_DIR=""
 PREVIOUS_RELEASE=""
 LEGACY_SOURCE=""
 LEGACY_WAS_ACTIVE=0
-HAD_UNIT_OVERRIDE=0
 HAD_ENV_FILE=0
 
 timestamp() {
@@ -75,7 +74,7 @@ on_error() {
 }
 
 cleanup() {
-    if [[ -n "${TEMP_DIR}" && "${TEMP_DIR}" == /tmp/subconverter-manager.* && -d "${TEMP_DIR}" ]]; then
+    if [[ -n "${TEMP_DIR}" && "${TEMP_DIR}" == "${INSTALL_ROOT}/.subconverter-manager."* && -d "${TEMP_DIR}" ]]; then
         rm -rf -- "${TEMP_DIR}"
     fi
 }
@@ -255,7 +254,10 @@ github_curl() {
 fetch_release_metadata() {
     status "正在获取最新发布版本"
 
-    TEMP_DIR="$(mktemp -d /tmp/subconverter-manager.XXXXXX)"
+    if [[ ! -d "${INSTALL_ROOT}" ]]; then
+        install -d -m 0755 "${INSTALL_ROOT}"
+    fi
+    TEMP_DIR="$(mktemp -d "${INSTALL_ROOT}/.subconverter-manager.XXXXXX")"
     RELEASE_JSON="${TEMP_DIR}/release.json"
 
     local api_url=""
@@ -603,65 +605,16 @@ service_uses_managed_paths() {
         (-z "${configured_group}" || "${configured_group}" == "${SERVICE_USER}") ]]
 }
 
-write_service_unit() {
-    local unit_temp=""
-    local service_exists=0
-
-    if systemctl cat "${SERVICE_NAME}.service" >/dev/null 2>&1; then
-        service_exists=1
+verify_existing_service() {
+    if ! systemctl cat "${SERVICE_NAME}.service" >/dev/null 2>&1; then
+        fail "未找到现有 ${SERVICE_NAME}.service；脚本不会自动创建或接管 systemd 文件，请先准备好服务配置"
     fi
 
-    if [[ -f "${UNIT_FILE}" ]]; then
-        HAD_UNIT_OVERRIDE=1
-    fi
-
-    if [[ "${service_exists}" == "1" ]] && service_uses_managed_paths; then
+    if service_uses_managed_paths; then
         log "现有 systemd 服务已指向托管目录，保留其配置"
-        return 0
+    else
+        log "检测到现有 ${SERVICE_NAME}.service，保留原配置，不写入或覆盖 systemd 文件"
     fi
-
-    if [[ "${service_exists}" == "1" ]]; then
-        if ! confirm "检测到现有 ${SERVICE_NAME} 服务文件，是否备份并接管"; then
-            fail "用户取消接管现有 systemd 服务"
-        fi
-        backup_control_files
-    fi
-
-    unit_temp="$(mktemp /tmp/subconverter-unit.XXXXXX)"
-    cat >"${unit_temp}" <<EOF
-# Managed by subconverter-manager
-[Unit]
-Description=SubConverter Service
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=${SERVICE_USER}
-Group=${SERVICE_USER}
-WorkingDirectory=${CURRENT_LINK}
-EnvironmentFile=-${ENV_FILE}
-ExecStart=${CURRENT_LINK}/subconverter
-Restart=on-failure
-RestartSec=3s
-TimeoutStopSec=20s
-KillSignal=SIGTERM
-NoNewPrivileges=true
-PrivateTmp=true
-ProtectHome=true
-ProtectSystem=full
-ProtectKernelTunables=true
-ProtectKernelModules=true
-ProtectControlGroups=true
-RestrictSUIDSGID=true
-UMask=0077
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-    install -m 0644 "${unit_temp}" "${UNIT_FILE}"
-    rm -f -- "${unit_temp}"
 }
 
 switch_current_release() {
@@ -781,11 +734,8 @@ health_check() {
 }
 
 restore_previous_service_definition() {
-    if [[ -n "${LAST_BACKUP_DIR}" && -f "${LAST_BACKUP_DIR}/service.unit" ]]; then
-        install -m 0644 "${LAST_BACKUP_DIR}/service.unit" "${UNIT_FILE}"
-    elif [[ "${HAD_UNIT_OVERRIDE}" == "0" ]]; then
-        rm -f -- "${UNIT_FILE}"
-    fi
+    # The manager never writes systemd unit files. Existing service definitions
+    # remain authoritative and are only copied into the backup directory.
 
     if [[ -n "${LAST_BACKUP_DIR}" && -f "${LAST_BACKUP_DIR}/environment.file" ]]; then
         install -m 0600 "${LAST_BACKUP_DIR}/environment.file" "${ENV_FILE}"
@@ -793,7 +743,6 @@ restore_previous_service_definition() {
         rm -f -- "${ENV_FILE}"
     fi
 
-    systemctl daemon-reload
 }
 
 rollback_activation() {
@@ -815,7 +764,7 @@ rollback_activation() {
         fail "更新失败，并且旧版本恢复后健康检查仍未通过，请查看 ${LOG_FILE}"
     fi
 
-    systemctl disable --now "${SERVICE_NAME}.service" >/dev/null 2>&1 || true
+    systemctl stop "${SERVICE_NAME}.service" >/dev/null 2>&1 || true
     rm -f -- "${CURRENT_LINK}"
     restore_previous_service_definition
 
@@ -847,8 +796,6 @@ activate_release() {
     fi
 
     switch_current_release "${NEW_RELEASE_DIR}" || rollback_activation
-    systemctl daemon-reload || rollback_activation
-    systemctl enable "${SERVICE_NAME}.service" >/dev/null || rollback_activation
     systemctl restart "${SERVICE_NAME}.service" || rollback_activation
 
     if ! health_check "${RELEASE_TAG}"; then
@@ -911,7 +858,7 @@ fresh_deploy() {
     download_and_verify_release
     prepare_release_directory "${LEGACY_SOURCE}"
     ensure_environment_file "${LEGACY_SOURCE}"
-    write_service_unit
+    verify_existing_service
 
     log "项目不使用数据库，跳过数据库迁移"
     activate_release "${LEGACY_SOURCE}"
@@ -942,7 +889,7 @@ one_click_update_prepared() {
     prepare_release_directory "${PREVIOUS_RELEASE}"
     ensure_environment_file "${PREVIOUS_RELEASE}"
 
-    write_service_unit
+    verify_existing_service
 
     log "项目不使用数据库，跳过数据库迁移"
     activate_release "${PREVIOUS_RELEASE}"
@@ -983,7 +930,7 @@ fresh_deploy_prepared() {
     download_and_verify_release
     prepare_release_directory "${LEGACY_SOURCE}"
     ensure_environment_file "${LEGACY_SOURCE}"
-    write_service_unit
+    verify_existing_service
     log "项目不使用数据库，跳过数据库迁移"
     activate_release "${LEGACY_SOURCE}"
     log "部署成功: ${RELEASE_TAG}"
