@@ -9,8 +9,6 @@ SERVICE_USER="${SUBCONVERTER_USER:-subconverter}"
 ENV_FILE="${SUBCONVERTER_ENV_FILE:-/etc/default/subconverter}"
 UNIT_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 LOG_FILE="${SUBCONVERTER_LOG_FILE:-/var/log/subconverter-manager.log}"
-CURRENT_LINK="${INSTALL_ROOT}/current"
-RELEASES_DIR="${INSTALL_ROOT}/releases"
 BACKUPS_DIR="${INSTALL_ROOT}/backups"
 ASSUME_YES="${SUBCONVERTER_ASSUME_YES:-0}"
 
@@ -46,9 +44,13 @@ PAYLOAD_DIR=""
 NEW_RELEASE_DIR=""
 LAST_BACKUP_DIR=""
 PREVIOUS_RELEASE=""
+RUNTIME_BACKUP=""
 LEGACY_SOURCE=""
 LEGACY_WAS_ACTIVE=0
 HAD_ENV_FILE=0
+HAD_UNIT_FILE=0
+SERVICE_EXISTED=0
+SERVICE_WAS_ENABLED=0
 
 timestamp() {
     date '+%Y-%m-%d %H:%M:%S'
@@ -137,8 +139,8 @@ check_platform() {
     command -v apt-get >/dev/null 2>&1 || fail "未找到 apt-get"
     command -v systemctl >/dev/null 2>&1 || fail "未找到 systemctl"
     [[ -d /run/systemd/system ]] || fail "当前系统未使用 systemd，无法创建和管理服务"
-    [[ "${INSTALL_ROOT}" == /* && "${INSTALL_ROOT}" != "/" && "${INSTALL_ROOT}" != "/opt" ]] ||
-        fail "安装路径必须是安全的绝对路径: ${INSTALL_ROOT}"
+    [[ "${INSTALL_ROOT}" == "/opt/subconverter" ]] ||
+        fail "运行目录必须固定为 /opt/subconverter；请移除 SUBCONVERTER_HOME 自定义值后重试"
     [[ "${INSTALL_ROOT}" != *[[:space:]]* ]] || fail "安装路径不能包含空格: ${INSTALL_ROOT}"
     [[ "${ENV_FILE}" == /* ]] || fail "环境变量文件必须使用绝对路径: ${ENV_FILE}"
     [[ "${SERVICE_NAME}" =~ ^[A-Za-z0-9_.@-]+$ ]] || fail "服务名包含非法字符: ${SERVICE_NAME}"
@@ -204,14 +206,13 @@ check_disk_space() {
 }
 
 ensure_layout() {
-    install -d -m 0755 "${INSTALL_ROOT}" "${RELEASES_DIR}"
-    install -d -m 0700 "${BACKUPS_DIR}"
-    chmod 0755 "${INSTALL_ROOT}" "${RELEASES_DIR}"
-    chmod 0700 "${BACKUPS_DIR}"
-
-    if [[ -e "${CURRENT_LINK}" && ! -L "${CURRENT_LINK}" ]]; then
-        fail "${CURRENT_LINK} 已存在但不是符号链接，拒绝覆盖"
+    if [[ -L "${INSTALL_ROOT}" ]]; then
+        fail "运行目录不能是符号链接: ${INSTALL_ROOT}"
     fi
+    install -d -m 0755 "${INSTALL_ROOT}"
+    install -d -m 0700 "${BACKUPS_DIR}"
+    chmod 0755 "${INSTALL_ROOT}"
+    chmod 0700 "${BACKUPS_DIR}"
 }
 
 ensure_service_user() {
@@ -373,6 +374,16 @@ detect_legacy_source() {
     if [[ -n "${SUBCONVERTER_IMPORT_DIR:-}" ]]; then
         [[ -d "${SUBCONVERTER_IMPORT_DIR}" ]] || fail "待导入的旧部署目录不存在: ${SUBCONVERTER_IMPORT_DIR}"
         LEGACY_SOURCE="$(readlink -f "${SUBCONVERTER_IMPORT_DIR}")"
+    elif [[ -f "${INSTALL_ROOT}/subconverter" && -x "${INSTALL_ROOT}/subconverter" ]]; then
+        # The supported layout keeps the executable directly in INSTALL_ROOT.
+        LEGACY_SOURCE="$(readlink -f "${INSTALL_ROOT}")"
+    elif [[ -L "${INSTALL_ROOT}/current" ]]; then
+        # Migrate deployments created by the old current/releases layout.
+        local current_target=""
+        current_target="$(readlink -f "${INSTALL_ROOT}/current" 2>/dev/null || true)"
+        if [[ -n "${current_target}" && -f "${current_target}/subconverter" ]]; then
+            LEGACY_SOURCE="${current_target}"
+        fi
     elif systemctl cat "${SERVICE_NAME}.service" >/dev/null 2>&1; then
         local working_directory=""
         working_directory="$(systemctl show -p WorkingDirectory --value "${SERVICE_NAME}.service" 2>/dev/null || true)"
@@ -525,11 +536,12 @@ overlay_preserved_data() {
 
 prepare_release_directory() {
     local preserve_source="${1:-}"
-    local release_id=""
 
     status "正在准备 ${RELEASE_TAG} 安装文件"
-    release_id="${RELEASE_TAG}-$(date '+%Y%m%d%H%M%S')-$$"
-    NEW_RELEASE_DIR="${RELEASES_DIR}/${release_id}"
+    # Stage the new payload under the install root, then copy it into the
+    # install root itself. No current/ or releases/ runtime directories are
+    # created by the manager.
+    NEW_RELEASE_DIR="${TEMP_DIR}/runtime"
     install -d -m 0755 "${NEW_RELEASE_DIR}"
     cp -a -- "${PAYLOAD_DIR}/." "${NEW_RELEASE_DIR}/"
     chmod 0755 "${NEW_RELEASE_DIR}/subconverter"
@@ -599,40 +611,157 @@ service_uses_managed_paths() {
     configured_user="$(systemctl show -p User --value "${SERVICE_NAME}.service" 2>/dev/null || true)"
     configured_group="$(systemctl show -p Group --value "${SERVICE_NAME}.service" 2>/dev/null || true)"
 
-    [[ "${working_directory}" == "${CURRENT_LINK}" &&
-        "${exec_start}" == *"${CURRENT_LINK}/subconverter"* &&
+    [[ "${working_directory}" == "${INSTALL_ROOT}" &&
+        "${exec_start}" == *"${INSTALL_ROOT}/subconverter"* &&
         "${configured_user}" == "${SERVICE_USER}" &&
         (-z "${configured_group}" || "${configured_group}" == "${SERVICE_USER}") ]]
 }
 
-verify_existing_service() {
-    if ! systemctl cat "${SERVICE_NAME}.service" >/dev/null 2>&1; then
-        fail "未找到现有 ${SERVICE_NAME}.service；脚本不会自动创建或接管 systemd 文件，请先准备好服务配置"
+write_service_unit() {
+    status "正在配置 systemd 服务"
+
+    if systemctl cat "${SERVICE_NAME}.service" >/dev/null 2>&1; then
+        SERVICE_EXISTED=1
+    fi
+    if systemctl is-enabled --quiet "${SERVICE_NAME}.service" >/dev/null 2>&1; then
+        SERVICE_WAS_ENABLED=1
+    fi
+
+    [[ ! -L "${UNIT_FILE}" ]] || fail "systemd 单元路径是符号链接，拒绝覆盖: ${UNIT_FILE}"
+    if [[ -e "${UNIT_FILE}" ]]; then
+        HAD_UNIT_FILE=1
+        backup_control_files
+        log "已备份现有 systemd 单元: ${LAST_BACKUP_DIR}/service.unit"
+    fi
+
+    local unit_temp="${TEMP_DIR:-/tmp}/subconverter.service.$$"
+    cat >"${unit_temp}" <<EOF
+[Unit]
+Description=SubConverter subscription converter
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=${SERVICE_USER}
+Group=${SERVICE_USER}
+WorkingDirectory=${INSTALL_ROOT}
+EnvironmentFile=-${ENV_FILE}
+ExecStart=${INSTALL_ROOT}/subconverter
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    install -o root -g root -m 0644 "${unit_temp}" "${UNIT_FILE}"
+    rm -f -- "${unit_temp}"
+    if ! systemctl daemon-reload; then
+        restore_previous_service_definition
+        fail "systemd daemon-reload 失败"
+    fi
+    if ! systemctl enable "${SERVICE_NAME}.service"; then
+        restore_previous_service_definition
+        fail "无法启用 ${SERVICE_NAME}.service"
     fi
 
     if service_uses_managed_paths; then
-        log "现有 systemd 服务已指向托管目录，保留其配置"
+        log "systemd 服务已指向 ${INSTALL_ROOT}/subconverter"
     else
-        log "检测到现有 ${SERVICE_NAME}.service，保留原配置，不写入或覆盖 systemd 文件"
+        restore_previous_service_definition
+        fail "systemd 服务加载后路径校验失败，请检查 ${UNIT_FILE}"
     fi
 }
 
-switch_current_release() {
-    local target="$1"
-    local temporary_link="${INSTALL_ROOT}/.current.$$"
-    local resolved_target=""
-    local resolved_releases=""
+install_runtime_payload() {
+    local source="$1"
 
-    resolved_target="$(readlink -f "${target}")"
-    resolved_releases="$(readlink -f "${RELEASES_DIR}")"
-    [[ "${resolved_target}" == "${resolved_releases}/"* ]] || fail "拒绝切换到托管目录之外: ${resolved_target}"
-    [[ -f "${resolved_target}/.subconverter-release" ]] || fail "目标目录缺少版本标记: ${resolved_target}"
-    [[ -x "${resolved_target}/subconverter" && ! -L "${resolved_target}/subconverter" ]] ||
-        fail "目标目录缺少安全的可执行文件: ${resolved_target}"
+    [[ -d "${source}" && ! -L "${source}" ]] || fail "安装暂存目录无效: ${source}"
+    [[ -f "${source}/.subconverter-release" ]] || fail "安装暂存目录缺少版本标记: ${source}"
+    [[ -x "${source}/subconverter" && ! -L "${source}/subconverter" ]] ||
+        fail "安装暂存目录缺少安全的可执行文件: ${source}"
 
-    rm -f -- "${temporary_link}"
-    ln -s "${resolved_target}" "${temporary_link}"
-    mv -Tf "${temporary_link}" "${CURRENT_LINK}"
+    # The runtime is always the install root. Existing user files remain in
+    # place unless they are part of the packaged program payload.
+    if [[ -L "${INSTALL_ROOT}/subconverter" ]]; then
+        rm -f -- "${INSTALL_ROOT}/subconverter"
+    fi
+    cp -a -- "${source}/." "${INSTALL_ROOT}/"
+    chmod 0755 "${INSTALL_ROOT}/subconverter"
+    set_runtime_ownership
+
+    # A successful migration no longer needs the legacy current link. The
+    # old releases directory is left untouched for manual recovery and is
+    # never created by this script.
+    if [[ -L "${INSTALL_ROOT}/current" ]]; then
+        rm -f -- "${INSTALL_ROOT}/current"
+    fi
+}
+
+backup_runtime_state() {
+    if [[ -z "${LAST_BACKUP_DIR}" ]]; then
+        LAST_BACKUP_DIR="${BACKUPS_DIR}/runtime-$(date '+%Y%m%d-%H%M%S')-$$"
+        install -d -m 0700 "${LAST_BACKUP_DIR}"
+        printf 'CREATED_AT=%s\n' "$(timestamp)" >"${LAST_BACKUP_DIR}/metadata"
+    fi
+
+    status "正在备份当前运行文件"
+    RUNTIME_BACKUP="${LAST_BACKUP_DIR}/runtime.tar.gz"
+    tar \
+        --exclude='./backups' \
+        --exclude='./.subconverter-manager.*' \
+        -czf "${RUNTIME_BACKUP}" \
+        -C "${INSTALL_ROOT}" .
+    chmod 0600 "${RUNTIME_BACKUP}"
+}
+
+restore_runtime_state() {
+    [[ -f "${RUNTIME_BACKUP}" ]] || return 0
+    status "正在恢复运行目录备份"
+
+    find "${INSTALL_ROOT}" -mindepth 1 -maxdepth 1 \
+        ! -name backups \
+        ! -name subconverter-manager.sh \
+        ! -name '.subconverter-manager.*' \
+        -exec rm -rf -- {} +
+    tar --no-same-owner --no-same-permissions -xzf "${RUNTIME_BACKUP}" -C "${INSTALL_ROOT}"
+    if [[ -f "${INSTALL_ROOT}/subconverter" ]]; then
+        chmod 0755 "${INSTALL_ROOT}/subconverter"
+    elif [[ -L "${INSTALL_ROOT}/current" ]]; then
+        local legacy_target=""
+        legacy_target="$(readlink -f "${INSTALL_ROOT}/current" 2>/dev/null || true)"
+        [[ -x "${legacy_target}/subconverter" ]] || fail "旧版运行目录备份恢复后缺少可执行文件"
+    fi
+
+    # Keep backups private even when the restored archive came from an older
+    # deployment with different ownership.
+    set_runtime_ownership
+}
+
+clear_runtime_contents() {
+    find "${INSTALL_ROOT}" -mindepth 1 -maxdepth 1 \
+        ! -name backups \
+        ! -name subconverter-manager.sh \
+        ! -name '.subconverter-manager.*' \
+        -exec rm -rf -- {} +
+}
+
+set_runtime_ownership() {
+    local path=""
+
+    [[ ! -L "${BACKUPS_DIR}" ]] || fail "备份目录不能是符号链接: ${BACKUPS_DIR}"
+    install -d -m 0700 "${BACKUPS_DIR}"
+    shopt -s nullglob dotglob
+    for path in "${INSTALL_ROOT}"/* "${INSTALL_ROOT}"/.[!.]* "${INSTALL_ROOT}"/..?*; do
+        [[ "${path}" == "${BACKUPS_DIR}" || "${path}" == "${TEMP_DIR}" ]] && continue
+        chown -R "${SERVICE_USER}:${SERVICE_USER}" "${path}"
+    done
+    shopt -u nullglob dotglob
+
+    chown -R root:root "${BACKUPS_DIR}"
+    chmod 0700 "${BACKUPS_DIR}"
 }
 
 configured_port() {
@@ -648,12 +777,12 @@ configured_port() {
         fi
     fi
 
-    if [[ -f "${CURRENT_LINK}/pref.toml" ]]; then
-        config_file="${CURRENT_LINK}/pref.toml"
-    elif [[ -f "${CURRENT_LINK}/pref.yml" ]]; then
-        config_file="${CURRENT_LINK}/pref.yml"
-    elif [[ -f "${CURRENT_LINK}/pref.ini" ]]; then
-        config_file="${CURRENT_LINK}/pref.ini"
+    if [[ -f "${INSTALL_ROOT}/pref.toml" ]]; then
+        config_file="${INSTALL_ROOT}/pref.toml"
+    elif [[ -f "${INSTALL_ROOT}/pref.yml" ]]; then
+        config_file="${INSTALL_ROOT}/pref.yml"
+    elif [[ -f "${INSTALL_ROOT}/pref.ini" ]]; then
+        config_file="${INSTALL_ROOT}/pref.ini"
     fi
 
     if [[ -n "${config_file}" ]]; then
@@ -734,45 +863,49 @@ health_check() {
 }
 
 restore_previous_service_definition() {
-    # The manager never writes systemd unit files. Existing service definitions
-    # remain authoritative and are only copied into the backup directory.
-
     if [[ -n "${LAST_BACKUP_DIR}" && -f "${LAST_BACKUP_DIR}/environment.file" ]]; then
         install -m 0600 "${LAST_BACKUP_DIR}/environment.file" "${ENV_FILE}"
     elif [[ "${HAD_ENV_FILE}" == "0" ]]; then
         rm -f -- "${ENV_FILE}"
     fi
 
+    if [[ -n "${LAST_BACKUP_DIR}" && -f "${LAST_BACKUP_DIR}/service.unit" ]]; then
+        install -o root -g root -m 0644 "${LAST_BACKUP_DIR}/service.unit" "${UNIT_FILE}"
+    elif [[ "${HAD_UNIT_FILE}" == "0" ]]; then
+        rm -f -- "${UNIT_FILE}"
+    fi
+    systemctl daemon-reload >/dev/null 2>&1 || true
+
+    if [[ "${SERVICE_WAS_ENABLED}" == "1" ]]; then
+        systemctl enable "${SERVICE_NAME}.service" >/dev/null 2>&1 || true
+    elif [[ "${SERVICE_EXISTED}" == "0" || "${HAD_UNIT_FILE}" == "1" ]]; then
+        systemctl disable "${SERVICE_NAME}.service" >/dev/null 2>&1 || true
+    fi
 }
 
 rollback_activation() {
     log "新版本启动失败，正在自动回滚"
 
-    if [[ -n "${PREVIOUS_RELEASE}" && -d "${PREVIOUS_RELEASE}" ]]; then
-        switch_current_release "${PREVIOUS_RELEASE}" || fail "无法将 current 链接恢复到旧版本"
-        restore_previous_service_definition || fail "回滚时无法恢复原 systemd 或环境配置"
-        if ! systemctl restart "${SERVICE_NAME}.service"; then
-            journalctl -u "${SERVICE_NAME}.service" --since '5 minutes ago' -n 80 --no-pager || true
-            fail "旧版本服务无法重新启动，请立即人工检查"
-        fi
-
-        local previous_tag=""
-        previous_tag="$(release_tag_from_directory "${PREVIOUS_RELEASE}")"
-        if health_check "${previous_tag}"; then
-            fail "更新失败，已成功回滚到 ${previous_tag:-上一版本}"
-        fi
-        fail "更新失败，并且旧版本恢复后健康检查仍未通过，请查看 ${LOG_FILE}"
-    fi
-
     systemctl stop "${SERVICE_NAME}.service" >/dev/null 2>&1 || true
-    rm -f -- "${CURRENT_LINK}"
+    if [[ -n "${RUNTIME_BACKUP}" && -f "${RUNTIME_BACKUP}" ]]; then
+        restore_runtime_state
+    else
+        clear_runtime_contents
+    fi
     restore_previous_service_definition
 
-    if [[ "${LEGACY_WAS_ACTIVE}" == "1" ]]; then
-        systemctl restart "${SERVICE_NAME}.service" || true
+    if [[ -f "${UNIT_FILE}" ]]; then
+        if [[ "${LEGACY_WAS_ACTIVE}" == "1" ]]; then
+            systemctl restart "${SERVICE_NAME}.service" || true
+            local previous_tag=""
+            previous_tag="$(release_tag_from_directory "${INSTALL_ROOT}")"
+            if health_check "${previous_tag}"; then
+                fail "更新失败，已成功回滚到 ${previous_tag:-上一版本}"
+            fi
+        fi
     fi
 
-    fail "部署失败，已撤销新服务；下载文件保留在 ${NEW_RELEASE_DIR} 便于排查"
+    fail "部署失败，已恢复 ${INSTALL_ROOT} 中的备份；请查看 ${LOG_FILE}"
 }
 
 activate_release() {
@@ -784,18 +917,25 @@ activate_release() {
         LEGACY_WAS_ACTIVE=1
     fi
 
-    # Briefly stop a running service so its last configuration writes are included.
-    if [[ "${LEGACY_WAS_ACTIVE}" == "1" && -n "${preserve_source}" ]]; then
+    # Stop before taking the runtime backup so the archive includes the last
+    # configuration writes made by the running process.
+    if [[ "${LEGACY_WAS_ACTIVE}" == "1" ]]; then
         status "正在短暂停止服务并同步最终配置"
         systemctl stop "${SERVICE_NAME}.service" || rollback_activation
     fi
 
-    if [[ -n "${preserve_source}" && "${preserve_source}" != "${NEW_RELEASE_DIR}" ]]; then
+    if [[ "${LEGACY_WAS_ACTIVE}" == "1" || -x "${INSTALL_ROOT}/subconverter" ||
+        -n "${PREVIOUS_RELEASE}" ]]; then
+        backup_runtime_state || rollback_activation
+    fi
+
+    if [[ -n "${preserve_source}" && "${preserve_source}" != "${NEW_RELEASE_DIR}" &&
+        "$(readlink -f "${preserve_source}")" != "$(readlink -f "${NEW_RELEASE_DIR}")" ]]; then
         overlay_preserved_data "${preserve_source}" "${NEW_RELEASE_DIR}" || rollback_activation
         chown -R "${SERVICE_USER}:${SERVICE_USER}" "${NEW_RELEASE_DIR}" || rollback_activation
     fi
 
-    switch_current_release "${NEW_RELEASE_DIR}" || rollback_activation
+    install_runtime_payload "${NEW_RELEASE_DIR}" || rollback_activation
     systemctl restart "${SERVICE_NAME}.service" || rollback_activation
 
     if ! health_check "${RELEASE_TAG}"; then
@@ -805,16 +945,22 @@ activate_release() {
 
 managed_current_release() {
     local target=""
-    local resolved_releases=""
+    local resolved_root=""
 
-    if [[ -L "${CURRENT_LINK}" ]]; then
-        target="$(readlink -f "${CURRENT_LINK}" 2>/dev/null || true)"
-        resolved_releases="$(readlink -f "${RELEASES_DIR}")"
-        [[ -n "${target}" ]] || fail "current 链接已损坏: ${CURRENT_LINK}"
-        [[ "${target}" == "${resolved_releases}/"* ]] || fail "current 指向托管目录之外: ${target}"
-        [[ -f "${target}/.subconverter-release" ]] || fail "current 指向的目录缺少版本标记: ${target}"
-        [[ -x "${target}/subconverter" && ! -L "${target}/subconverter" ]] ||
-            fail "current 指向的目录缺少安全的可执行文件: ${target}"
+    if [[ -f "${INSTALL_ROOT}/.subconverter-release" &&
+        -x "${INSTALL_ROOT}/subconverter" && ! -L "${INSTALL_ROOT}/subconverter" ]]; then
+        printf '%s\n' "${INSTALL_ROOT}"
+        return 0
+    fi
+
+    if [[ -L "${INSTALL_ROOT}/current" ]]; then
+        target="$(readlink -f "${INSTALL_ROOT}/current" 2>/dev/null || true)"
+        resolved_root="$(readlink -f "${INSTALL_ROOT}" 2>/dev/null || true)"
+        [[ -n "${target}" ]] || fail "旧版 current 链接已损坏: ${INSTALL_ROOT}/current"
+        [[ -n "${resolved_root}" && "${target}" == "${resolved_root}/"* ]] ||
+            fail "旧版 current 指向运行目录之外: ${target}"
+        [[ -f "${target}/.subconverter-release" && -x "${target}/subconverter" ]] ||
+            fail "旧版 current 指向的目录缺少有效程序: ${target}"
         printf '%s\n' "${target}"
     fi
 }
@@ -858,13 +1004,13 @@ fresh_deploy() {
     download_and_verify_release
     prepare_release_directory "${LEGACY_SOURCE}"
     ensure_environment_file "${LEGACY_SOURCE}"
-    verify_existing_service
+    write_service_unit
 
     log "项目不使用数据库，跳过数据库迁移"
     activate_release "${LEGACY_SOURCE}"
 
     log "部署成功: ${RELEASE_TAG}"
-    log "安装目录: ${CURRENT_LINK}"
+    log "安装目录: ${INSTALL_ROOT}"
     log "服务地址: http://127.0.0.1:$(configured_port)/version"
 }
 
@@ -889,13 +1035,13 @@ one_click_update_prepared() {
     prepare_release_directory "${PREVIOUS_RELEASE}"
     ensure_environment_file "${PREVIOUS_RELEASE}"
 
-    verify_existing_service
+    write_service_unit
 
     log "项目不使用数据库，跳过数据库迁移"
     activate_release "${PREVIOUS_RELEASE}"
 
     log "更新成功: ${current_tag:-unknown} -> ${RELEASE_TAG}"
-    log "旧版本仍保留在 ${PREVIOUS_RELEASE}，可用于人工回退"
+    log "旧版本运行文件已备份到 ${LAST_BACKUP_DIR}/runtime.tar.gz"
 }
 
 one_click_update() {
@@ -930,7 +1076,7 @@ fresh_deploy_prepared() {
     download_and_verify_release
     prepare_release_directory "${LEGACY_SOURCE}"
     ensure_environment_file "${LEGACY_SOURCE}"
-    verify_existing_service
+    write_service_unit
     log "项目不使用数据库，跳过数据库迁移"
     activate_release "${LEGACY_SOURCE}"
     log "部署成功: ${RELEASE_TAG}"
@@ -992,6 +1138,6 @@ main() {
     done
 }
 
-if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+if [[ "${BASH_SOURCE[0]:-}" == "$0" ]]; then
     main "$@"
 fi
