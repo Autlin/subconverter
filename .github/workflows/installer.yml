@@ -1,0 +1,153 @@
+name: Installer CI
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - 'subconverter-manager.sh'
+      - 'README-cn.md'
+      - '.github/workflows/installer.yml'
+      - '.github/workflows/build.yml'
+  pull_request:
+    paths:
+      - 'subconverter-manager.sh'
+      - 'README-cn.md'
+      - '.github/workflows/installer.yml'
+      - '.github/workflows/build.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.ref }}-${{ github.workflow }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate Debian installer
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install test tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends file jq shellcheck
+
+      - name: Static checks
+        run: |
+          bash -n subconverter-manager.sh
+          shellcheck -x subconverter-manager.sh
+
+      - name: Verify latest Release download
+        run: |
+          set -euo pipefail
+          test_root="$(mktemp -d)"
+          export SUBCONVERTER_HOME="${test_root}/install"
+          export SUBCONVERTER_ENV_FILE="${test_root}/environment"
+          export SUBCONVERTER_LOG_FILE="${test_root}/manager.log"
+          source ./subconverter-manager.sh
+          ARCHIVE_NAME=subconverter_linux64.tar.gz
+          fetch_release_metadata
+          for asset in subconverter_linux32.tar.gz subconverter_linux64.tar.gz subconverter_armv7.tar.gz subconverter_aarch64.tar.gz; do
+            jq -e --arg asset "${asset}" '.assets | any(.name == $asset)' "${RELEASE_JSON}" >/dev/null
+          done
+          download_and_verify_release
+          test -x "${PAYLOAD_DIR}/subconverter"
+          file "${PAYLOAD_DIR}/subconverter" | grep -q 'statically linked'
+
+      - name: Verify configuration preservation
+        run: |
+          set -euo pipefail
+          test_root="$(mktemp -d)"
+          source_dir="${test_root}/old"
+          target_dir="${test_root}/new"
+          backup_dir="${test_root}/backups"
+          mkdir -p "${source_dir}/config" "${target_dir}/config" "${backup_dir}"
+          printf 'listen=127.0.0.1\n' > "${source_dir}/pref.ini"
+          printf 'custom=true\n' > "${source_dir}/config/custom.ini"
+          printf 'new-default=true\n' > "${target_dir}/config/default.ini"
+
+          export SUBCONVERTER_HOME="${test_root}/install"
+          export SUBCONVERTER_ENV_FILE="${test_root}/environment"
+          export SUBCONVERTER_LOG_FILE="${test_root}/manager.log"
+          source ./subconverter-manager.sh
+          BACKUPS_DIR="${backup_dir}"
+
+          backup_configuration "${source_dir}"
+          overlay_preserved_data "${source_dir}" "${target_dir}"
+
+          grep -q 'listen=127.0.0.1' "${target_dir}/pref.ini"
+          grep -q 'custom=true' "${target_dir}/config/custom.ini"
+          grep -q 'new-default=true' "${target_dir}/config/default.ini"
+          tar -tzf "${LAST_BACKUP_DIR}/configuration.tar.gz" | grep -q '^pref.ini$'
+
+          unsafe_dir="${test_root}/unsafe"
+          mkdir -p "${unsafe_dir}"
+          ln -s /etc/passwd "${unsafe_dir}/pref.ini"
+          if (preserved_paths "${unsafe_dir}" >/dev/null); then
+            echo 'symbolic-link configuration was not rejected' >&2
+            exit 1
+          fi
+
+      - name: Verify atomic release switch
+        run: |
+          set -euo pipefail
+          test_root="$(mktemp -d)"
+          export SUBCONVERTER_HOME="${test_root}/install"
+          export SUBCONVERTER_ENV_FILE="${test_root}/environment"
+          export SUBCONVERTER_LOG_FILE="${test_root}/manager.log"
+          source ./subconverter-manager.sh
+          mkdir -p "${RELEASES_DIR}/old" "${RELEASES_DIR}/new"
+          printf 'TAG=v0.9.10\n' > "${RELEASES_DIR}/old/.subconverter-release"
+          printf '#!/bin/sh\n' > "${RELEASES_DIR}/old/subconverter"
+          printf 'TAG=v0.9.11\n' > "${RELEASES_DIR}/new/.subconverter-release"
+          printf '#!/bin/sh\n' > "${RELEASES_DIR}/new/subconverter"
+          chmod +x "${RELEASES_DIR}/old/subconverter" "${RELEASES_DIR}/new/subconverter"
+          switch_current_release "${RELEASES_DIR}/old"
+          test "$(readlink -f "${CURRENT_LINK}")" = "$(readlink -f "${RELEASES_DIR}/old")"
+          switch_current_release "${RELEASES_DIR}/new"
+          test "$(readlink -f "${CURRENT_LINK}")" = "$(readlink -f "${RELEASES_DIR}/new")"
+
+      - name: Verify failed activation rollback
+        run: |
+          set -euo pipefail
+          test_root="$(mktemp -d)"
+          export SUBCONVERTER_HOME="${test_root}/install"
+          export SUBCONVERTER_ENV_FILE="${test_root}/environment"
+          export SUBCONVERTER_LOG_FILE="${test_root}/manager.log"
+          source ./subconverter-manager.sh
+
+          mkdir -p "${RELEASES_DIR}/old" "${RELEASES_DIR}/new"
+          printf 'TAG=v0.9.10\n' > "${RELEASES_DIR}/old/.subconverter-release"
+          printf '#!/bin/sh\n' > "${RELEASES_DIR}/old/subconverter"
+          printf 'TAG=v0.9.11\n' > "${RELEASES_DIR}/new/.subconverter-release"
+          printf '#!/bin/sh\n' > "${RELEASES_DIR}/new/subconverter"
+          chmod +x "${RELEASES_DIR}/old/subconverter" "${RELEASES_DIR}/new/subconverter"
+          switch_current_release "${RELEASES_DIR}/old"
+          PREVIOUS_RELEASE="$(readlink -f "${RELEASES_DIR}/old")"
+          NEW_RELEASE_DIR="${RELEASES_DIR}/new"
+          RELEASE_TAG=v0.9.11
+          UNIT_FILE="${test_root}/subconverter.service"
+          ENV_FILE="${test_root}/subconverter.env"
+          LAST_BACKUP_DIR="${test_root}/backup"
+          HAD_UNIT_OVERRIDE=1
+          HAD_ENV_FILE=1
+          mkdir -p "${LAST_BACKUP_DIR}"
+          printf 'old-unit\n' > "${LAST_BACKUP_DIR}/service.unit"
+          printf 'old-env\n' > "${LAST_BACKUP_DIR}/environment.file"
+          printf 'managed-unit\n' > "${UNIT_FILE}"
+          printf 'managed-env\n' > "${ENV_FILE}"
+
+          systemctl() { return 0; }
+          journalctl() { return 0; }
+          health_check() { [[ "${1:-}" == 'v0.9.10' ]]; }
+
+          if (activate_release); then
+            echo 'failed activation unexpectedly succeeded' >&2
+            exit 1
+          fi
+          test "$(readlink -f "${CURRENT_LINK}")" = "$(readlink -f "${RELEASES_DIR}/old")"
+          grep -q '^old-unit$' "${UNIT_FILE}"
+          grep -q '^old-env$' "${ENV_FILE}"
