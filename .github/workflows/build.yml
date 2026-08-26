@@ -36,11 +36,6 @@ jobs:
             image_digest: sha256:2fee8d2c1f48926bfb3fa65ed559f776856914f47c84f9fc48bf8ad0f2db5df8
             os: ubuntu-latest
             qemu: false
-          - arch: armv7
-            artifact: subconverter_armv7
-            image_digest: sha256:01551e7b433b231fc0175db3ed6dff0f4b7c30007f68c20c9854bd087c5c61d3
-            os: ubuntu-latest
-            qemu: true
           - arch: aarch64
             artifact: subconverter_aarch64
             image_digest: sha256:89cfb80d20c0799839214fb9a7fc1fb425be59af1d79d793b3cca7fe4ed2b338
@@ -76,7 +71,7 @@ jobs:
   release:
     name: Publish GitHub Release
     if: ${{ github.event_name != 'pull_request' && startsWith(github.ref, 'refs/tags/') }}
-    needs: [linux_build, macos_build, windows_build]
+    needs: [linux_build]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -92,101 +87,17 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p package
-          for artifact in subconverter_linux32 subconverter_linux64 subconverter_armv7 subconverter_aarch64 subconverter_darwin64 subconverter_darwinarm; do
+          for artifact in subconverter_linux32 subconverter_linux64 subconverter_aarch64; do
             rm -rf package/subconverter
             cp -R "release-artifacts/${artifact}" package/subconverter
             tar czf "${artifact}.tar.gz" -C package subconverter
           done
-          for artifact in subconverter_win32 subconverter_win64; do
-            rm -rf package/subconverter
-            cp -R "release-artifacts/${artifact}" package/subconverter
-            (cd package && 7z a -t7z "${GITHUB_WORKSPACE}/${artifact}.7z" subconverter >/dev/null)
-          done
-          sha256sum *.tar.gz *.7z > SHA256SUMS
+          sha256sum *.tar.gz > SHA256SUMS
 
       - name: Publish release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           files: |
             *.tar.gz
-            *.7z
             SHA256SUMS
           draft: false
-
-  macos_build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: x86
-            artifact: subconverter_darwin64
-            os: macos-15
-          - arch: arm
-            artifact: subconverter_darwinarm
-            os: macos-15
-    runs-on: ${{ matrix.os }}
-    name: macOS ${{ matrix.arch }} Build
-    steps:
-      - name: Checkout base
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - name: Setup Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-        with:
-          python-version: '3.11'
-      - name: Add commit id into version
-        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
-        run: SHA=$(git rev-parse --short HEAD) && sed -i '' 's/\(v[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)/\1-'"$SHA"'/' src/version.h
-      - name: Build
-        run: bash scripts/build.macos.release.sh
-      - name: Upload
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: ${{ matrix.artifact }}
-          path: subconverter/
-
-  windows_build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: x86
-            artifact: subconverter_win32
-            env: i686
-            msystem: MINGW32
-          - arch: amd64
-            artifact: subconverter_win64
-            env: x86_64
-            msystem: MINGW64
-    runs-on: windows-latest
-    name: Windows ${{ matrix.arch }} Build
-    defaults:
-      run:
-        shell: msys2 {0}
-    steps:
-      - name: Checkout base
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - name: Setup Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-        with:
-          python-version: '3.11'
-      - name: Setup Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: '16'
-      - name: Setup MSYS2
-        uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2
-        with:
-          update: true
-          install: base-devel git mingw-w64-${{ matrix.env }}-gcc mingw-w64-${{ matrix.env }}-cmake mingw-w64-${{ matrix.env }}-pcre2 patch
-          msystem: ${{ matrix.msystem }}
-          path-type: inherit
-      - name: Add commit id into version
-        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
-        run: SHA=$(git rev-parse --short HEAD) && sed -i 's/\(v[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)/\1-'"$SHA"'/' src/version.h
-      - name: Build
-        run: bash scripts/build.windows.release.sh
-      - name: Upload
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: ${{ matrix.artifact }}
-          path: subconverter/
