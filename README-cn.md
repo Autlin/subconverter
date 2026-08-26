@@ -9,6 +9,42 @@
 
 * * *
 
+## Debian 一键部署与更新
+
+项目提供统一的部署与更新脚本，不需要在服务器上编译源码。脚本会自动识别 CPU 架构、下载最新 GitHub Release 静态二进制、校验 SHA256、配置 systemd 服务，并在更新失败时回滚。
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Autlin/subconverter/master/subconverter-manager.sh \
+  -o subconverter-manager.sh
+chmod +x subconverter-manager.sh
+sudo ./subconverter-manager.sh
+```
+
+启动后可选择：
+
+```text
+1. 全新部署
+2. 一键更新
+3. 退出
+```
+
+也可以使用同一个脚本直接执行指定操作：
+
+```bash
+sudo ./subconverter-manager.sh deploy
+sudo ./subconverter-manager.sh update
+```
+
+默认安装目录是 `/opt/subconverter`，服务名是 `subconverter`。更新前会备份并保留活动配置、`config/`、`profiles/`、`snippets/`、`rules/`、`base/`、`cache/`、`gistconf.ini` 和 `generate.ini`。备份保存在 `/opt/subconverter/backups/`，运行日志保存在 `/var/log/subconverter-manager.log`。
+
+已有手工部署需要导入指定目录时，可执行：
+
+```bash
+sudo SUBCONVERTER_IMPORT_DIR=/原安装目录 ./subconverter-manager.sh deploy
+```
+
+* * *
+
 ## 新增内容
 
 2021/10/1
