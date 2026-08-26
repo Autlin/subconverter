@@ -9,6 +9,7 @@ on:
       - 'subconverter-manager.sh'
       - 'README.md'
       - 'README-cn.md'
+      - 'README-docker.md'
       - '.github/workflows/installer.yml'
       - '.github/workflows/build.yml'
 

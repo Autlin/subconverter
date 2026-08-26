@@ -2,16 +2,16 @@
 
 Utility to convert between various proxy subscription formats.
 
-original git: https://github.com/asdlokj1qpi23/subconverter
+Original repository: https://github.com/asdlokj1qpi233/subconverter
 
-[![Build Status](https://github.com/asdlokj1qpi233/subconverter/actions/workflows/docker.yml/badge.svg)](https://github.com/asdlokj1qpi233/subconverter/actions)
-[![GitHub tag (latest SemVer)](https://img.shields.io/github/tag/asdlokj1qpi233/subconverter.svg)](https://github.com/asdlokj1qpi23/subconverter/tags)
-[![GitHub release](https://img.shields.io/github/release/asdlokj1qpi233/subconverter.svg)](https://github.com/asdlokj1qpi233/subconverter/releases)
-[![GitHub license](https://img.shields.io/github/license/asdlokj1qpi233/subconverter.svg)](https://github.com/tindy2013/subconverter/blob/master/LICENSE)
+[![Build Status](https://github.com/Autlin/subconverter/actions/workflows/build.yml/badge.svg)](https://github.com/Autlin/subconverter/actions)
+[![GitHub tag (latest SemVer)](https://img.shields.io/github/tag/Autlin/subconverter.svg)](https://github.com/Autlin/subconverter/tags)
+[![GitHub release](https://img.shields.io/github/release/Autlin/subconverter.svg)](https://github.com/Autlin/subconverter/releases)
+[![GitHub license](https://img.shields.io/github/license/Autlin/subconverter.svg)](LICENSE)
 
-[Docker README](https://github.com/asdlokj1qpi23/subconverter/blob/master/README-docker.md)
+[Docker README](README-docker.md)
 
-[中文文档](https://github.com/asdlokj1qpi23/subconverter/blob/master/README-cn.md)
+[中文文档](README-cn.md)
 
 - [subconverter](#subconverter)
   - [Debian Installation and Updates](#debian-installation-and-updates)
@@ -62,7 +62,7 @@ sudo SUBCONVERTER_IMPORT_DIR=/path/to/existing/subconverter ./subconverter-manag
 For running this docker, simply use the following commands:
 ```bash
 # run the container detached, forward internal port 25500 to host port 25500
-docker run -d --restart=always -p 25500:25500 asdlokj1qpi23/subconverter:latest
+docker run -d --restart=always -p 25500:25500 lin8666/subconverter:latest
 # then check its status
 curl http://localhost:25500/version
 # if you see `subconverter vx.x.x backend` then the container is up and running
@@ -73,7 +73,7 @@ Or run in docker-compose:
 version: '3'
 services:
   subconverter:
-    image: asdlokj1qpi23/subconverter:latest
+    image: lin8666/subconverter:latest
     container_name: subconverter
     ports:
       - "15051:25500"
@@ -157,7 +157,7 @@ Finally subscribe this link in Clash and you are done!
 
 ## Advanced Usage
 
-Please refer to [中文文档](https://github.com/asdlokj1qpi23/subconverter/blob/master/README-cn.md#%E8%BF%9B%E9%98%B6%E7%94%A8%E6%B3%95).
+Please refer to [中文文档](README-cn.md#进阶用法).
 
 ## Auto Upload
 
