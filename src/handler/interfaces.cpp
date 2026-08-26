@@ -542,6 +542,10 @@ std::string subconverter(RESPONSE_CALLBACK_ARGS) {
             argAddEmoji.define(extconf.add_emoji);
             argRemoveEmoji.define(extconf.remove_old_emoji);
         }
+        else {
+            *status_code = 400;
+            return "External configuration is empty, unavailable, or invalid.";
+        }
     } else {
         if (!lSimpleSubscription) {
             /// loading custom groups

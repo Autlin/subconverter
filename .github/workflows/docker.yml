@@ -23,8 +23,6 @@ jobs:
             os: ubuntu-latest
           - platform: linux/386
             os: ubuntu-latest
-          - platform: linux/arm/v7
-            os: ubuntu-latest
           - platform: linux/arm64
             os: ubuntu-latest
     runs-on: ${{ matrix.os }}
@@ -123,7 +121,7 @@ jobs:
       - name: Create manifest list and push
         working-directory: /tmp/digests
         run: |
-          test "$(find . -maxdepth 1 -type f | wc -l)" -eq 4
+          test "$(find . -maxdepth 1 -type f | wc -l)" -eq 3
           docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
             $(printf '${{ env.REGISTRY_IMAGE }}@sha256:%s ' *)      
 
