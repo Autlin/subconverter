@@ -1,7 +1,6 @@
 FROM alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b AS builder
 LABEL maintainer="tindy.it@gmail.com"
 ARG THREADS="4"
-ARG SHA=""
 
 # build minimized
 WORKDIR /
@@ -44,7 +43,6 @@ RUN set -xe && \
 COPY . /subconverter
 WORKDIR /subconverter
 RUN set -xe && \
-    if [ -n "$SHA" ]; then sed -i 's/\(v[0-9]\.[0-9]\.[0-9]\)/\1-'"$SHA"'/' src/version.h; fi && \
     PIP_BREAK_SYSTEM_PACKAGES=1 python3 -m pip install --no-cache-dir \
         GitPython==3.1.59 gitdb==4.0.12 smmap==5.0.3 typing-extensions==4.7.1 && \
     python3 scripts/update_rules.py -c scripts/rules_config.conf && \
