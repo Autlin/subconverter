@@ -2,6 +2,9 @@ name: Publish Docker Image
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency: 
   group: ${{ github.ref }}-${{ github.workflow }}
   cancel-in-progress: true
@@ -65,7 +68,8 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           platforms: ${{ matrix.platform }}
-          context: scripts/
+          context: .
+          file: Dockerfile.local
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             SHA=${{ steps.vars.outputs.sha_short }}

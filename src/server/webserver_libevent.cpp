@@ -7,12 +7,14 @@
 #endif // MALLOC_TRIM
 
 #include <string>
+#include <filesystem>
 #include <map>
 #include <algorithm>
 #include <cstring>
 #include <pthread.h>
 #include <thread>
 
+#include "handler/settings.h"
 #include "utils/base64/base64.h"
 #include "utils/file_extra.h"
 #include "utils/logger.h"
@@ -89,15 +91,33 @@ std::string checkMIMEType(const std::string &filename)
 
 int serveFile(WebServer *server, const std::string &filename, std::string &content_type, std::string &return_data)
 {
-    std::string realname = server->serve_file_root + filename;
-    if(filename == "/")
-        realname += "index.html";
-    if(!fileExist(realname))
+    namespace fs = std::filesystem;
+
+    if(filename.empty() || filename.front() != '/' || filename.find("..") != std::string::npos
+        || filename.find('\\') != std::string::npos)
         return 1;
 
-    return_data = fileGet(realname, false);
-    content_type = checkMIMEType(realname);
-    writeLog(0, "file-server: serving '" + filename + "' type '" + content_type + "'", LOG_LEVEL_INFO);
+    std::error_code ec;
+    fs::path root = fs::weakly_canonical(server->serve_file_root, ec);
+    if(ec)
+        return 1;
+
+    fs::path relative = filename == "/" ? fs::path("index.html") : fs::path(filename).relative_path();
+    fs::path realname = fs::weakly_canonical(root / relative, ec);
+    if(ec || !fs::is_regular_file(realname, ec) || ec)
+        return 1;
+
+    std::string root_string = root.string();
+    std::string file_string = realname.string();
+    if(file_string.rfind(root_string + "/", 0) != 0)
+        return 1;
+
+    return_data = fileGet(file_string, false);
+    if(return_data.empty())
+        return 1;
+
+    content_type = checkMIMEType(file_string);
+    writeLog(0, "file-server: serving '" + filename + "' type '" + content_type + "'", LOG_LEVEL_DEBUG);
     return 0;
 }
 
@@ -114,7 +134,18 @@ static inline void buffer_cleanup(struct evbuffer *eb)
 
 static int process_request(WebServer *server, Request &request, Response &response, std::string &return_data)
 {
-    writeLog(0, "handle_cmd:    " + request.method + " handle_uri:    " + request.url, LOG_LEVEL_VERBOSE);
+    std::string allowed_origin = server->corsHeaderFor(request.headers["Origin"]);
+    if(!allowed_origin.empty())
+    {
+        response.headers.emplace("Access-Control-Allow-Origin", allowed_origin);
+        if(allowed_origin != "*")
+            response.headers.emplace("Vary", "Origin");
+        if(request.method == "OPTIONS")
+            response.headers.emplace("Access-Control-Allow-Headers", "Content-Type, Authorization");
+    }
+
+    if(global.logLevel >= LOG_LEVEL_VERBOSE)
+        writeLog(0, "handle_cmd:    " + request.method + " handle_uri:    " + request.url, LOG_LEVEL_VERBOSE);
 
     string_size pos = request.url.find('?');
     if(pos != std::string::npos)
@@ -151,14 +182,12 @@ static int process_request(WebServer *server, Request &request, Response &respon
             }
             catch(std::exception &e)
             {
-                return_data = "Internal server error while processing request path '" + request.url + "' with arguments '" + joinArguments(request.argument) + "'!";
-                return_data += "\n  exception: ";
-                return_data += type(e);
-                return_data += "\n  what(): ";
-                return_data += e.what();
+                return_data = "Internal server error";
                 response.content_type = "text/plain";
                 response.status_code = 500;
-                writeLog(0, return_data, LOG_LEVEL_ERROR);
+                writeLog(0, "Internal server error while processing request path '" + request.url
+                    + "' with arguments '" + joinArguments(request.argument)
+                    + "': " + type(e) + ": " + e.what(), LOG_LEVEL_ERROR);
             }
             return 0;
         }
@@ -198,7 +227,8 @@ static void on_request(evhttp_request *req, void *args)
     u_short client_port;
     evhttp_connection_get_peer(evhttp_request_get_connection(req), &client_ip, &client_port);
     //std::cerr<<"Accept connection from client "<<client_ip<<":"<<client_port<<"\n";
-    writeLog(0, "Accept connection from client " + std::string(client_ip) + ":" + std::to_string(client_port), LOG_LEVEL_DEBUG);
+    if(global.logLevel >= LOG_LEVEL_DEBUG)
+        writeLog(0, "Accept connection from client " + std::string(client_ip) + ":" + std::to_string(client_port), LOG_LEVEL_DEBUG);
 
     if (internal_flag != nullptr)
     {
@@ -273,8 +303,6 @@ static void on_request(evhttp_request *req, void *args)
     switch (retVal)
     {
     case 1: //found OPTIONS
-        evhttp_add_header(req->output_headers, "Access-Control-Allow-Origin", "*");
-        evhttp_add_header(req->output_headers, "Access-Control-Allow-Headers", "*");
         evhttp_send_reply(req, response.status_code, nullptr, nullptr);
         break;
     case 2: //found redirect
@@ -284,7 +312,6 @@ static void on_request(evhttp_request *req, void *args)
     case 0: //found normal
         if (!content_type.empty())
             evhttp_add_header(req->output_headers, "Content-Type", content_type.c_str());
-        evhttp_add_header(req->output_headers, "Access-Control-Allow-Origin", "*");
         evhttp_add_header(req->output_headers, "Connection", "close");
         evbuffer_add(output_buffer, return_data.data(), return_data.size());
         evhttp_send_reply(req, response.status_code, nullptr, output_buffer);
@@ -412,7 +439,7 @@ int WebServer::start_web_server_multi(listener_args *args)
     {
         if (args->looper_callback != nullptr)
             args->looper_callback();
-        std::this_thread::sleep_for(std::chrono::milliseconds(args->looper_interval)); //block forever until receive stop signal
+        std::this_thread::sleep_for(std::chrono::milliseconds(args->looper_interval));
     }
 
     for (int i = 0; i < nthreads; i++)

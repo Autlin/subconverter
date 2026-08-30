@@ -133,7 +133,7 @@ int addNodes(std::string link, std::vector<Proxy> &allNodes, int groupID, parse_
         linkType = ConfType::SUB;
     else if(startsWith(link, "Netch://"))
         linkType = ConfType::Netch;
-    else if(fileExist(link))
+    else if(authorized && fileExist(link))
         linkType = ConfType::Local;
 
     switch(linkType)

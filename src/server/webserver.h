@@ -37,7 +37,7 @@ struct listener_args
     int max_conn;
     int max_workers;
     void (*looper_callback)() = nullptr;
-    uint32_t looper_interval = 200;
+    uint32_t looper_interval = 1000;
 };
 
 struct responseRoute
@@ -57,6 +57,22 @@ public:
     // file server
     bool serve_file = false;
     std::string serve_file_root;
+    std::string cors_allow_origin;
+
+    std::string corsHeaderFor(const std::string &origin) const
+    {
+        if(cors_allow_origin.empty() || origin.empty())
+            return "";
+        if(cors_allow_origin == "*")
+            return "*";
+        for(auto allowed : split(cors_allow_origin, ','))
+        {
+            std::string trimmed = trimWhitespace(std::string(allowed));
+            if(trimmed == origin)
+                return trimmed;
+        }
+        return "";
+    }
 
     // basic authentication
     bool require_auth = false;

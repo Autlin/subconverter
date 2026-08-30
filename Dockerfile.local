@@ -50,8 +50,12 @@ FROM alpine:3.16
 RUN apk add --no-cache --virtual subconverter-deps pcre2 libcurl yaml-cpp
 COPY --from=builder /subconverter/subconverter /usr/bin/
 COPY --from=builder /subconverter/base /base/
+RUN addgroup -S subconverter && adduser -S -G subconverter subconverter \
+    && chown -R subconverter:subconverter /base
 ENV TZ=Africa/Abidjan
 RUN ln -sf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
+ENV LISTEN=0.0.0.0 API_MODE=true
 WORKDIR /base
+USER subconverter
 CMD subconverter
 EXPOSE 25500/tcp

@@ -27,20 +27,27 @@ std::string fileGet(const std::string &path, bool scope_limit)
     std::FILE *fp = std::fopen(path.c_str(), "rb");
     if(fp)
     {
-        std::fseek(fp, 0, SEEK_END);
+        if(std::fseek(fp, 0, SEEK_END) != 0)
+        {
+            std::fclose(fp);
+            return content;
+        }
         long tot = std::ftell(fp);
-        /*
-        char *data = new char[tot + 1];
-        data[tot] = '\0';
+        if(tot < 0)
+        {
+            std::fclose(fp);
+            return content;
+        }
         std::rewind(fp);
-        std::fread(&data[0], 1, tot, fp);
-        std::fclose(fp);
-        content.assign(data, tot);
-        delete[] data;
-        */
-        content.resize(tot);
-        std::rewind(fp);
-        std::fread(&content[0], 1, tot, fp);
+        if(tot > 0)
+        {
+            content.resize(static_cast<std::size_t>(tot));
+            const std::size_t read_size = std::fread(content.data(), 1, content.size(), fp);
+            if(std::ferror(fp))
+                content.clear();
+            else if(read_size < content.size())
+                content.resize(read_size);
+        }
         std::fclose(fp);
     }
 
@@ -104,7 +111,9 @@ int fileWrite(const std::string &path, const std::string &content, bool overwrit
     */
     const char *mode = overwrite ? "wb" : "ab";
     std::FILE *fp = std::fopen(path.c_str(), mode);
-    std::fwrite(content.c_str(), 1, content.size(), fp);
-    std::fclose(fp);
-    return 0;
+    if(fp == nullptr)
+        return -1;
+    const std::size_t written = std::fwrite(content.data(), 1, content.size(), fp);
+    const int close_result = std::fclose(fp);
+    return written == content.size() && close_result == 0 ? 0 : -1;
 }

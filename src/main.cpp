@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <iostream>
 #include <string>
 #include <unistd.h>
@@ -25,6 +26,12 @@
 //#include "vfs.h"
 
 WebServer webServer;
+
+static bool requestAuthorized(Request &request)
+{
+    return !global.accessToken.empty()
+        && getUrlArg(request.argument, "token") == global.accessToken;
+}
 
 #ifndef _WIN32
 void SetConsoleTitle(const std::string &title)
@@ -191,14 +198,10 @@ int main(int argc, char *argv[])
 
     webServer.append_response("GET", "/refreshrules", "text/plain", [](RESPONSE_CALLBACK_ARGS) -> std::string
     {
-        if(!global.accessToken.empty())
+        if(!requestAuthorized(request))
         {
-            std::string token = getUrlArg(request.argument, "token");
-            if(token != global.accessToken)
-            {
-                response.status_code = 403;
-                return "Forbidden\n";
-            }
+            response.status_code = 403;
+            return "Forbidden\n";
         }
         refreshRulesets(global.customRulesets, global.rulesetsContent);
         return "done\n";
@@ -206,14 +209,10 @@ int main(int argc, char *argv[])
 
     webServer.append_response("GET", "/readconf", "text/plain", [](RESPONSE_CALLBACK_ARGS) -> std::string
     {
-        if(!global.accessToken.empty())
+        if(!requestAuthorized(request))
         {
-            std::string token = getUrlArg(request.argument, "token");
-            if(token != global.accessToken)
-            {
-                response.status_code = 403;
-                return "Forbidden\n";
-            }
+            response.status_code = 403;
+            return "Forbidden\n";
         }
         readConf();
         if(!global.updateRulesetOnRequest)
@@ -223,14 +222,10 @@ int main(int argc, char *argv[])
 
     webServer.append_response("POST", "/updateconf", "text/plain", [](RESPONSE_CALLBACK_ARGS) -> std::string
     {
-        if(!global.accessToken.empty())
+        if(!requestAuthorized(request))
         {
-            std::string token = getUrlArg(request.argument, "token");
-            if(token != global.accessToken)
-            {
-                response.status_code = 403;
-                return "Forbidden\n";
-            }
+            response.status_code = 403;
+            return "Forbidden\n";
         }
         std::string type = getUrlArg(request.argument, "type");
         if(type == "form" || type == "direct")
@@ -251,7 +246,7 @@ int main(int argc, char *argv[])
 
     webServer.append_response("GET", "/flushcache", "text/plain", [](RESPONSE_CALLBACK_ARGS) -> std::string
     {
-        if(getUrlArg(request.argument, "token") != global.accessToken)
+        if(!requestAuthorized(request))
         {
             response.status_code = 403;
             return "Forbidden";
@@ -278,13 +273,29 @@ int main(int argc, char *argv[])
     {
         webServer.append_response("GET", "/get", "text/plain;charset=utf-8", [](RESPONSE_CALLBACK_ARGS) -> std::string
         {
+            if(!requestAuthorized(request))
+            {
+                response.status_code = 403;
+                return "Forbidden";
+            }
             std::string url = urlDecode(getUrlArg(request.argument, "url"));
             return webGet(url, "");
         });
 
         webServer.append_response("GET", "/getlocal", "text/plain;charset=utf-8", [](RESPONSE_CALLBACK_ARGS) -> std::string
         {
-            return fileGet(urlDecode(getUrlArg(request.argument, "path")));
+            if(!requestAuthorized(request))
+            {
+                response.status_code = 403;
+                return "Forbidden";
+            }
+            std::string content = fileGet(urlDecode(getUrlArg(request.argument, "path")), true);
+            if(content.empty())
+            {
+                response.status_code = 404;
+                return "Not found";
+            }
+            return content;
         });
     }
 
@@ -292,13 +303,24 @@ int main(int argc, char *argv[])
 
     //webServer.append_response("GET", "/list-profiles", "text/plain;charset=utf-8", listProfiles);
 
-    std::string env_port = getEnv("PORT");
+    std::string env_listen = getEnv("LISTEN"), env_port = getEnv("PORT");
+    if(!env_listen.empty())
+        global.listenAddress = env_listen;
     if(!env_port.empty())
         global.listenPort = to_int(env_port, global.listenPort);
-    listener_args args = {global.listenAddress, global.listenPort, global.maxPendingConns, global.maxConcurThreads, cron_tick_caller, 200};
+    const int configured_threads = global.maxConcurThreads;
+    const int configured_backlog = global.maxPendingConns;
+    global.maxConcurThreads = std::clamp(global.maxConcurThreads, 1, 256);
+    global.maxPendingConns = std::clamp(global.maxPendingConns, 1, 65535);
+    if(configured_threads != global.maxConcurThreads)
+        writeLog(0, "max_concurrent_threads adjusted to " + std::to_string(global.maxConcurThreads), LOG_LEVEL_WARNING);
+    if(configured_backlog != global.maxPendingConns)
+        writeLog(0, "max_pending_connections adjusted to " + std::to_string(global.maxPendingConns), LOG_LEVEL_WARNING);
+    listener_args args = {global.listenAddress, global.listenPort, global.maxPendingConns, global.maxConcurThreads, cron_tick_caller, 1000};
     //std::cout<<"Serving HTTP @ http://"<<listen_address<<":"<<listen_port<<std::endl;
     writeLog(0, "Startup completed. Serving HTTP @ http://" + global.listenAddress + ":" + std::to_string(global.listenPort), LOG_LEVEL_INFO);
-    webServer.start_web_server_multi(&args);
+    if(webServer.start_web_server_multi(&args) != 0)
+        return 1;
 
 #ifdef _WIN32
     WSACleanup();

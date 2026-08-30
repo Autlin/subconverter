@@ -2,10 +2,10 @@
 
 在各种订阅格式之间进行转换的实用程序.
 
-[![Build Status](https://github.com/tindy2013/subconverter/actions/workflows/build.yml/badge.svg)](https://github.com/tindy2013/subconverter/actions)
-[![GitHub tag (latest SemVer)](https://img.shields.io/github/tag/tindy2013/subconverter.svg)](https://github.com/tindy2013/subconverter/tags)
-[![GitHub release](https://img.shields.io/github/release/tindy2013/subconverter.svg)](https://github.com/tindy2013/subconverter/releases)
-[![GitHub license](https://img.shields.io/github/license/tindy2013/subconverter.svg)](https://github.com/tindy2013/subconverter/blob/master/LICENSE)
+[![Build Status](https://github.com/MiCat-S/subconverter/actions/workflows/build.yml/badge.svg)](https://github.com/MiCat-S/subconverter/actions)
+[![GitHub tag (latest SemVer)](https://img.shields.io/github/tag/MiCat-S/subconverter.svg)](https://github.com/MiCat-S/subconverter/tags)
+[![GitHub release](https://img.shields.io/github/release/MiCat-S/subconverter.svg)](https://github.com/MiCat-S/subconverter/releases)
+[![GitHub license](https://img.shields.io/github/license/MiCat-S/subconverter.svg)](https://github.com/MiCat-S/subconverter/blob/master/LICENSE)
 
 * * *
 
@@ -150,7 +150,7 @@
 
 3.  目标类型为 `mixed` 时，会输出所有支持的节点的单链接组成的普通订阅（Base64编码）
 
-4.  目标类型为 `auto` 时，会根据请求的 `User-Agent` 自动判断输出的目标类型，匹配规则可参见 [此处](https://github.com/tindy2013/subconverter/blob/master/src/handler/interfaces.cpp#L121) （该链接有可能因为代码修改而不能准确指向相应的代码）
+4.  目标类型为 `auto` 时，会根据请求的 `User-Agent` 自动判断输出的目标类型，匹配规则可参见 [此处](https://github.com/MiCat-S/subconverter/blob/master/src/handler/interfaces.cpp#L121) （该链接有可能因为代码修改而不能准确指向相应的代码）
 
 * * *
 
@@ -382,7 +382,7 @@ http://127.0.0.1:25500/getprofile?name=%NAME%&token=%TOKEN%
 
 应当注意的是，此处文件内的参数**无需进行 URLEncode**，且此处的 `token` 与 `api_mode` 的状态无关。
 
-在程序目录内的任意位置创建一个新的文档文件（推荐保存至 `profiles` 文件夹内，以使整洁目录及便于后续维护），如 `formyairport.ini`，并仿照 [示例文档](https://github.com/tindy2013/subconverter/blob/master/base/profiles/example_profile.ini) 根据配置好的参数填写进去即可。
+在程序目录内的任意位置创建一个新的文档文件（推荐保存至 `profiles` 文件夹内，以使整洁目录及便于后续维护），如 `formyairport.ini`，并仿照 [示例文档](https://github.com/MiCat-S/subconverter/blob/master/base/profiles/example_profile.ini) 根据配置好的参数填写进去即可。
 
 <details>
 <summary>举个例子：</summary>
@@ -408,7 +408,7 @@ exclude=(流量|官网)
 
 > 关于 subconverter 主程序目录中 `pref.ini` 文件的解释，其余格式的配置文件不再赘述，与之相仿。
 
-注：本部分内容以本程序中的 [`pref.example.ini`](https://github.com/tindy2013/subconverter/blob/master/base/pref.example.ini) 或 [`pref.example.yml`](https://github.com/tindy2013/subconverter/blob/master/base/pref.example.yml) 或 [`pref.example.toml`](https://github.com/tindy2013/subconverter/blob/master/base/pref.example.toml) 为准，本文档可能由于更新不及时，内容不适用于新版本。
+注：本部分内容以本程序中的 [`pref.example.ini`](https://github.com/MiCat-S/subconverter/blob/master/base/pref.example.ini) 或 [`pref.example.yml`](https://github.com/MiCat-S/subconverter/blob/master/base/pref.example.yml) 或 [`pref.example.toml`](https://github.com/MiCat-S/subconverter/blob/master/base/pref.example.toml) 为准，本文档可能由于更新不及时，内容不适用于新版本。
 
 加载配置文件时会按照`pref.toml`、`pref.yml`、`pref.ini`的优先级顺序加载优先级高的配置文件
 
@@ -423,13 +423,13 @@ exclude=(流量|官网)
 
 1.  **api_mode**
 
-    > API 模式，设置为 true 以防止直接加载本地订阅或直接提供本地文件，若访问这些内容则需要接上 `&token=`。（多用于部署公共订阅转换服务时）
+    > API 模式，默认为 `true`，可防止匿名请求加载本地订阅、本地外部配置或使用脚本能力；远程订阅和远程外部配置不受影响。若要使用这些本地/脚本能力，需要配置访问令牌并在请求中接上 `&token=`。
 
-    -   当值为 `false` 时, 每次更新配置都会读取 主程序目录中的配置文件 , 为 `true` 时则仅启动时读取。
+    -   当值为 `false` 时, 每次更新配置都会读取主程序目录中的配置文件，为 `true` 时则仅启动时读取。公网部署应保持 `true`。
 
 2.  **api_access_token**
 
-    > 用于访问相对隐私的接口（如 `/getprofile`）
+    > 用于访问管理接口、本地文件、本地外部配置和脚本能力；留空时这些授权能力不可用。公网部署建议设置长随机令牌。
 
     -   例如:
 
@@ -1040,7 +1040,7 @@ custom_proxy_group=节点选择`select`(^(?!.*(美国|日本)).*)
 
 1.  **listen**
 
-    > 绑定到 Web 服务器的地址，将地址设为 0.0.0.0，则局域网内设备均可使用
+    > 绑定到 Web 服务器的地址，默认 `127.0.0.1` 仅本机可访问；设置为 `0.0.0.0` 后局域网或公网可达，请同时配置反向代理、访问控制或令牌。
 
 2.  **port**
 
@@ -1049,6 +1049,10 @@ custom_proxy_group=节点选择`select`(^(?!.*(美国|日本)).*)
 3.  **serve_file_root**
 
     > Web服务器的根目录，可以为包含静态页面的文件夹，留空则为关闭
+
+4.  **cors_allow_origin**
+
+    > CORS `Access-Control-Allow-Origin` 策略。留空表示不启用 CORS；`*` 表示允许所有来源；也可以配置为逗号分隔的精确 Origin 白名单，例如 `https://example.com,https://app.example.com`
 
 </details>
 
@@ -1135,7 +1139,7 @@ custom_proxy_group=节点选择`select`(^(?!.*(美国|日本)).*)
 
 > 本部分用于 链接参数 **`&config=`**
 
-注：本部分内容以本程序中的 [`/config/example_external_config.ini`](https://github.com/tindy2013/subconverter/blob/master/base/config/example_external_config.ini) 或 [`/config/example_external_config.yml`](https://github.com/tindy2013/subconverter/blob/master/base/config/example_external_config.yml) 或 [`/config/example_external_config.toml`](https://github.com/tindy2013/subconverter/blob/master/base/config/example_external_config.toml) 为准，本文档可能由于更新不及时，内容不适用于新版本。
+注：本部分内容以本程序中的 [`/config/example_external_config.ini`](https://github.com/MiCat-S/subconverter/blob/master/base/config/example_external_config.ini) 或 [`/config/example_external_config.yml`](https://github.com/MiCat-S/subconverter/blob/master/base/config/example_external_config.yml) 或 [`/config/example_external_config.toml`](https://github.com/MiCat-S/subconverter/blob/master/base/config/example_external_config.toml) 为准，本文档可能由于更新不及时，内容不适用于新版本。
 
 将文件按照以下格式写好，上传至 Github Gist 或者 其他**可访问**网络位置
 经过 [URLEncode](https://www.urlencoder.org/) 处理后，添加至 `&config=` 即可调用
@@ -1367,7 +1371,7 @@ http://127.0.0.1:25500/render?path=xxx&额外的调试或控制参数
 
 > 启动程序后，在本地生成对应的配置文件文本
 
-在程序目录内的 [generate.ini](https://github.com/tindy2013/subconverter/blob/master/base/generate.ini) 中设定文件块(`[xxx]`)，生成的文件名(path=xxx)以及其所需要包含的参数，例如：
+在程序目录内的 [generate.ini](https://github.com/MiCat-S/subconverter/blob/master/base/generate.ini) 中设定文件块(`[xxx]`)，生成的文件名(path=xxx)以及其所需要包含的参数，例如：
 
 ```ini
 [test]
@@ -1389,7 +1393,7 @@ profile=profiles/example_profile.ini
 
 > 自动上传 gist ，可以用于 Clash For Android / Surge 等进行远程订阅
 
-在程序目录内的 [gistconf.ini](https://github.com/tindy2013/subconverter/blob/master/base/gistconf.ini) 中添加 `Personal Access Token`（[在此创建](https://github.com/settings/tokens/new?scopes=gist&description=Subconverter)）例如：
+在程序目录内的 [gistconf.ini](https://github.com/MiCat-S/subconverter/blob/master/base/gistconf.ini) 中添加 `Personal Access Token`（[在此创建](https://github.com/settings/tokens/new?scopes=gist&description=Subconverter)）例如：
 
 ```ini
 [common]

@@ -246,7 +246,8 @@ void readRuleset(YAML::Node node, string_array &dest, bool scope_limit = true)
 
 void refreshRulesets(RulesetConfigs &ruleset_list, std::vector<RulesetContent> &ruleset_content_array)
 {
-    eraseElements(ruleset_content_array);
+    ruleset_content_array.clear();
+    ruleset_content_array.reserve(ruleset_list.size());
     std::string rule_group, rule_url, rule_url_typed, interval;
     RulesetContent rc;
 
@@ -259,8 +260,8 @@ void refreshRulesets(RulesetConfigs &ruleset_list, std::vector<RulesetContent> &
         std::string::size_type pos = x.Url.find("[]");
         if(pos != std::string::npos)
         {
-            writeLog(0, "Adding rule '" + rule_url.substr(pos + 2) + "," + rule_group + "'.", LOG_LEVEL_INFO);
-            rc = {rule_group, "", "", "", RULESET_SURGE, std::async(std::launch::async, [=](){return rule_url.substr(pos);}), 0};
+            writeLog(0, "Adding rule '" + rule_url.substr(pos + 2) + "," + rule_group + "'.", LOG_LEVEL_DEBUG);
+            rc = {rule_group, "", "", "", RULESET_SURGE, std::async(std::launch::deferred, [=](){return rule_url.substr(pos);}), 0};
         }
         else
         {
@@ -272,12 +273,11 @@ void refreshRulesets(RulesetConfigs &ruleset_list, std::vector<RulesetContent> &
                 rule_url.erase(0, iter->first.size());
                 type = iter->second;
             }
-            writeLog(0, "Updating ruleset url '" + rule_url + "' with group '" + rule_group + "'.", LOG_LEVEL_INFO);
+            writeLog(0, "Updating ruleset url '" + rule_url + "' with group '" + rule_group + "'.", LOG_LEVEL_DEBUG);
             rc = {rule_group, rule_url, rule_url_typed, x.Format, type, fetchFileAsync(rule_url, proxy, global.cacheRuleset, true, global.asyncFetchRuleset), x.Interval};
         }
         ruleset_content_array.emplace_back(std::move(rc));
     }
-    ruleset_content_array.shrink_to_fit();
 }
 
 void readYAMLConf(YAML::Node &node)
@@ -501,12 +501,14 @@ void readYAMLConf(YAML::Node &node)
         global.cronTasks = INIBinding::from<CronTaskConfig>::from_ini(vArray);
         refresh_schedule();
     }
-
+    else
+        refresh_schedule();
     if(node["server"].IsDefined())
     {
         node["server"]["listen"] >> global.listenAddress;
         node["server"]["port"] >> global.listenPort;
         node["server"]["serve_file_root"] >>= webServer.serve_file_root;
+        node["server"]["cors_allow_origin"] >> webServer.cors_allow_origin;
         webServer.serve_file = !webServer.serve_file_root.empty();
     }
 
@@ -706,6 +708,7 @@ void readTOMLConf(toml::value &root)
     auto tasks = toml::find_or<std::vector<toml::value>>(root, "tasks", {});
     importItems(tasks, "tasks", false);
     global.cronTasks = toml::get<CronTaskConfigs>(toml::value(tasks));
+    global.enableCron = !global.cronTasks.empty();
     refresh_schedule();
 
     auto section_server = toml::find(root, "server");
@@ -713,7 +716,8 @@ void readTOMLConf(toml::value &root)
     find_if_exist(section_server,
                   "listen", global.listenAddress,
                   "port", global.listenPort,
-                  "serve_file_root", webServer.serve_file_root
+                  "serve_file_root", webServer.serve_file_root,
+                  "cors_allow_origin", webServer.cors_allow_origin
     );
     webServer.serve_file = !webServer.serve_file_root.empty();
 
@@ -789,6 +793,13 @@ void readConf()
     eraseElements(global.includeRemarks);
     eraseElements(global.customProxyGroups);
     eraseElements(global.customRulesets);
+    safe_set_renames(RegexMatchConfigs{});
+    safe_set_emojis(RegexMatchConfigs{});
+    safe_set_streams(RegexMatchConfigs{});
+    safe_set_times(RegexMatchConfigs{});
+    webServer.reset_redirect();
+    global.enableCron = false;
+    global.cronTasks.clear();
 
     try
     {
@@ -1007,11 +1018,13 @@ void readConf()
         global.cronTasks = INIBinding::from<CronTaskConfig>::from_ini(vArray);
         refresh_schedule();
     }
-
+    else
+        refresh_schedule();
     ini.enter_section("server");
     ini.get_if_exist("listen", global.listenAddress);
     ini.get_int_if_exist("port", global.listenPort);
     webServer.serve_file_root = ini.get("serve_file_root");
+    ini.get_if_exist("cors_allow_origin", webServer.cors_allow_origin);
     webServer.serve_file = !webServer.serve_file_root.empty();
 
     ini.enter_section("advanced");
@@ -1197,8 +1210,14 @@ int loadExternalTOML(toml::value &root, ExternalConfig &ext)
     return 0;
 }
 
-int loadExternalConfig(std::string &path, ExternalConfig &ext)
+int loadExternalConfig(std::string &path, ExternalConfig &ext, bool authorized)
 {
+    if(!authorized && !isLink(path))
+    {
+        writeLog(0, "Local external configuration is not allowed without authorization.", LOG_LEVEL_WARNING);
+        return -1;
+    }
+
     std::string base_content, proxy = parseProxy(global.proxyConfig), config = fetchFile(path, proxy, global.cacheConfig);
     if(render_template(config, *ext.tpl_args, base_content, global.templatePath) != 0)
         base_content = config;

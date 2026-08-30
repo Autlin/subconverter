@@ -30,7 +30,7 @@ struct Settings
     bool printDbgInfo = false, CFWChildProcess = false, appendUserinfo = true, asyncFetchRuleset = false, surgeResolveHostname = true;
     std::string accessToken, basePath = "base";
     std::string custom_group;
-    int logLevel = LOG_LEVEL_VERBOSE;
+    int logLevel = LOG_LEVEL_INFO;
     long maxAllowedDownloadSize = 1048576L;
     string_map aliases;
 
@@ -100,7 +100,7 @@ struct ExternalConfig
 extern Settings global;
 
 int importItems(string_array &target, bool scope_limit = true);
-int loadExternalConfig(std::string &path, ExternalConfig &ext);
+int loadExternalConfig(std::string &path, ExternalConfig &ext, bool authorized);
 //template <class T, class... U>
 //void find_if_exist(const toml::value &v, const toml::key &k, T& target, U&&... args)
 //{

@@ -366,9 +366,16 @@ std::string subconverter(RESPONSE_CALLBACK_ARGS) {
                        ? to_int(argUpdateInterval, global.updateInterval)
                        : global.updateInterval;
     bool authorized =
-            !global.APIMode || getUrlArg(argument, "token") == global.accessToken, strict = !argUpdateStrict.empty()
+            !global.accessToken.empty() && getUrlArg(argument, "token") == global.accessToken,
+            strict = !argUpdateStrict.empty()
         ? argUpdateStrict == "true"
         : global.updateStrict;
+
+    if (argUpload && !authorized)
+    {
+        *status_code = 403;
+        return "Forbidden";
+    }
 
     if (std::find(gRegexBlacklist.cbegin(), gRegexBlacklist.cend(), argIncludeRemark) != gRegexBlacklist.cend() ||
         std::find(gRegexBlacklist.cbegin(), gRegexBlacklist.cend(), argExcludeRemark) != gRegexBlacklist.cend())
@@ -463,10 +470,10 @@ std::string subconverter(RESPONSE_CALLBACK_ARGS) {
         argExternalConfig = global.defaultExtConfig;
     if (!argExternalConfig.empty()) {
         //std::cerr<<"External configuration file provided. Loading...\n";
-        writeLog(0, "External configuration file provided. Loading...", LOG_LEVEL_INFO);
+        writeLog(0, "External configuration file provided. Loading...", LOG_LEVEL_DEBUG);
         ExternalConfig extconf;
         extconf.tpl_args = &tpl_args;
-        if (loadExternalConfig(argExternalConfig, extconf) == 0) {
+        if (loadExternalConfig(argExternalConfig, extconf, authorized) == 0) {
             if (!ext.nodelist) {
                 checkExternalBase(extconf.sssub_rule_base, lSSSubBase);
                 if (!lSimpleSubscription) {
@@ -576,7 +583,7 @@ std::string subconverter(RESPONSE_CALLBACK_ARGS) {
         importItems(urls, true);
         for (std::string &x: urls) {
             x = regTrim(x);
-            writeLog(0, "Fetching node data from url '" + x + "'.", LOG_LEVEL_INFO);
+            writeLog(0, "Fetching node data from url '" + x + "'.", LOG_LEVEL_DEBUG);
             if (addNodes(x, insert_nodes, groupID, parse_set) == -1) {
                 if (global.skipFailedLinks)
                     writeLog(0, "The following link doesn't contain any valid node info: " + x, LOG_LEVEL_WARNING);
@@ -594,7 +601,7 @@ std::string subconverter(RESPONSE_CALLBACK_ARGS) {
     for (std::string &x: urls) {
         x = regTrim(x);
         //std::cerr<<"Fetching node data from url '"<<x<<"'."<<std::endl;
-        writeLog(0, "Fetching node data from url '" + x + "'.", LOG_LEVEL_INFO);
+        writeLog(0, "Fetching node data from url '" + x + "'.", LOG_LEVEL_DEBUG);
         if (addNodes(x, nodes, groupID, parse_set) == -1) {
             if (global.skipFailedLinks)
                 writeLog(0, "The following link doesn't contain any valid node info: " + x, LOG_LEVEL_WARNING);
@@ -697,7 +704,7 @@ std::string subconverter(RESPONSE_CALLBACK_ARGS) {
     switch (hash_(argTarget)) {
         case "clash"_hash:
         case "clashr"_hash:
-            writeLog(0, argTarget == "clashr" ? "Generate target: ClashR" : "Generate target: Clash", LOG_LEVEL_INFO);
+            writeLog(0, argTarget == "clashr" ? "Generate target: ClashR" : "Generate target: Clash", LOG_LEVEL_DEBUG);
             tpl_args.local_vars["clash.new_field_name"] = ext.clash_new_field_name ? "true" : "false";
             response.headers["profile-update-interval"] = std::to_string(interval / 3600);
             if (ext.nodelist) {
@@ -719,7 +726,7 @@ std::string subconverter(RESPONSE_CALLBACK_ARGS) {
             break;
         case "surge"_hash:
 
-            writeLog(0, "Generate target: Surge " + std::to_string(intSurgeVer), LOG_LEVEL_INFO);
+            writeLog(0, "Generate target: Surge " + std::to_string(intSurgeVer), LOG_LEVEL_DEBUG);
 
             if (ext.nodelist) {
                 output_content = proxyToSurge(nodes, base_content, dummy_ruleset, dummy_group, intSurgeVer, ext);
@@ -746,7 +753,7 @@ std::string subconverter(RESPONSE_CALLBACK_ARGS) {
             }
             break;
         case "surfboard"_hash:
-            writeLog(0, "Generate target: Surfboard", LOG_LEVEL_INFO);
+            writeLog(0, "Generate target: Surfboard", LOG_LEVEL_DEBUG);
 
             if (render_template(fetchFile(lSurfboardBase, proxy, global.cacheConfig), tpl_args, base_content,
                                 global.templatePath) != 0) {
@@ -764,7 +771,7 @@ std::string subconverter(RESPONSE_CALLBACK_ARGS) {
                                  + " strict=" + std::string(strict ? "true" : "false") + "\n\n" + output_content;
             break;
         case "mellow"_hash:
-            writeLog(0, "Generate target: Mellow", LOG_LEVEL_INFO);
+            writeLog(0, "Generate target: Mellow", LOG_LEVEL_DEBUG);
 
             if (render_template(fetchFile(lMellowBase, proxy, global.cacheConfig), tpl_args, base_content,
                                 global.templatePath) != 0) {
@@ -777,7 +784,7 @@ std::string subconverter(RESPONSE_CALLBACK_ARGS) {
                 uploadGist("mellow", argUploadPath, output_content, true);
             break;
         case "sssub"_hash:
-            writeLog(0, "Generate target: SS Subscription", LOG_LEVEL_INFO);
+            writeLog(0, "Generate target: SS Subscription", LOG_LEVEL_DEBUG);
 
             if (render_template(fetchFile(lSSSubBase, proxy, global.cacheConfig), tpl_args, base_content,
                                 global.templatePath) != 0) {
@@ -789,49 +796,49 @@ std::string subconverter(RESPONSE_CALLBACK_ARGS) {
                 uploadGist("sssub", argUploadPath, output_content, false);
             break;
         case "ss"_hash:
-            writeLog(0, "Generate target: SS", LOG_LEVEL_INFO);
+            writeLog(0, "Generate target: SS", LOG_LEVEL_DEBUG);
             output_content = proxyToSingle(nodes, 1, ext);
             if (argUpload)
                 uploadGist("ss", argUploadPath, output_content, false);
             break;
         case "ssr"_hash:
-            writeLog(0, "Generate target: SSR", LOG_LEVEL_INFO);
+            writeLog(0, "Generate target: SSR", LOG_LEVEL_DEBUG);
             output_content = proxyToSingle(nodes, 2, ext);
             if (argUpload)
                 uploadGist("ssr", argUploadPath, output_content, false);
             break;
         case "v2ray"_hash:
-            writeLog(0, "Generate target: v2rayN", LOG_LEVEL_INFO);
+            writeLog(0, "Generate target: v2rayN", LOG_LEVEL_DEBUG);
             output_content = proxyToSingle(nodes, 4, ext);
             if (argUpload)
                 uploadGist("v2ray", argUploadPath, output_content, false);
             break;
         case "trojan"_hash:
-            writeLog(0, "Generate target: Trojan", LOG_LEVEL_INFO);
+            writeLog(0, "Generate target: Trojan", LOG_LEVEL_DEBUG);
             output_content = proxyToSingle(nodes, 8, ext);
             if (argUpload)
                 uploadGist("trojan", argUploadPath, output_content, false);
             break;
         case "vless"_hash:
-            writeLog(0, "Generate target: vless", LOG_LEVEL_INFO);
+            writeLog(0, "Generate target: vless", LOG_LEVEL_DEBUG);
             output_content = proxyToSingle(nodes, 16, ext);
             if (argUpload)
                 uploadGist("vless", argUploadPath, output_content, false);
             break;
         case "hysteria2"_hash:
-            writeLog(0, "Generate target: hysteria2", LOG_LEVEL_INFO);
+            writeLog(0, "Generate target: hysteria2", LOG_LEVEL_DEBUG);
             output_content = proxyToSingle(nodes, 32, ext);
             if (argUpload)
                 uploadGist("hysteria2", argUploadPath, output_content, false);
             break;
         case "mixed"_hash:
-            writeLog(0, "Generate target: Standard Subscription", LOG_LEVEL_INFO);
+            writeLog(0, "Generate target: Standard Subscription", LOG_LEVEL_DEBUG);
             output_content = proxyToSingle(nodes, 63, ext);
             if (argUpload)
                 uploadGist("sub", argUploadPath, output_content, false);
             break;
         case "quan"_hash:
-            writeLog(0, "Generate target: Quantumult", LOG_LEVEL_INFO);
+            writeLog(0, "Generate target: Quantumult", LOG_LEVEL_DEBUG);
             if (!ext.nodelist) {
                 if (render_template(fetchFile(lQuanBase, proxy, global.cacheConfig), tpl_args, base_content,
                                     global.templatePath) != 0) {
@@ -846,7 +853,7 @@ std::string subconverter(RESPONSE_CALLBACK_ARGS) {
                 uploadGist("quan", argUploadPath, output_content, false);
             break;
         case "quanx"_hash:
-            writeLog(0, "Generate target: Quantumult X", LOG_LEVEL_INFO);
+            writeLog(0, "Generate target: Quantumult X", LOG_LEVEL_DEBUG);
             if (!ext.nodelist) {
                 if (render_template(fetchFile(lQuanXBase, proxy, global.cacheConfig), tpl_args, base_content,
                                     global.templatePath) != 0) {
@@ -861,7 +868,7 @@ std::string subconverter(RESPONSE_CALLBACK_ARGS) {
                 uploadGist("quanx", argUploadPath, output_content, false);
             break;
         case "loon"_hash:
-            writeLog(0, "Generate target: Loon", LOG_LEVEL_INFO);
+            writeLog(0, "Generate target: Loon", LOG_LEVEL_DEBUG);
             if (!ext.nodelist) {
                 if (render_template(fetchFile(lLoonBase, proxy, global.cacheConfig), tpl_args, base_content,
                                     global.templatePath) != 0) {
@@ -876,13 +883,13 @@ std::string subconverter(RESPONSE_CALLBACK_ARGS) {
                 uploadGist("loon", argUploadPath, output_content, false);
             break;
         case "ssd"_hash:
-            writeLog(0, "Generate target: SSD", LOG_LEVEL_INFO);
+            writeLog(0, "Generate target: SSD", LOG_LEVEL_DEBUG);
             output_content = proxyToSSD(nodes, argGroupName, subInfo, ext);
             if (argUpload)
                 uploadGist("ssd", argUploadPath, output_content, false);
             break;
         case "singbox"_hash:
-            writeLog(0, "Generate target: sing-box", LOG_LEVEL_INFO);
+            writeLog(0, "Generate target: sing-box", LOG_LEVEL_DEBUG);
             if (!ext.nodelist) {
                 if (render_template(fetchFile(lSingBoxBase, proxy, global.cacheConfig), tpl_args, base_content,
                                     global.templatePath) != 0) {
@@ -897,15 +904,24 @@ std::string subconverter(RESPONSE_CALLBACK_ARGS) {
                 uploadGist("singbox", argUploadPath, output_content, false);
             break;
         default:
-            writeLog(0, "Generate target: Unspecified", LOG_LEVEL_INFO);
+            writeLog(0, "Generate target: Unspecified", LOG_LEVEL_DEBUG);
             *status_code = 500;
             return "Unrecognized target";
     }
-    writeLog(0, "Generate completed.", LOG_LEVEL_INFO);
+    writeLog(0, "Generate completed.", LOG_LEVEL_DEBUG);
     if (!argFilename.empty())
+    {
+        std::string safe_filename;
+        safe_filename.reserve(argFilename.size());
+        for(char x : argFilename)
+        {
+            if(x >= 0x20 && x != 0x7f && x != '"' && x != '\\')
+                safe_filename.push_back(x);
+        }
         response.headers.emplace("Content-Disposition",
-                                 "attachment; filename=\"" + argFilename + "\"; filename*=utf-8''" + urlEncode(
+                                 "attachment; filename=\"" + safe_filename + "\"; filename*=utf-8''" + urlEncode(
                                      argFilename));
+    }
     return output_content;
 }
 
@@ -950,7 +966,7 @@ std::string surgeConfToClash(RESPONSE_CALLBACK_ARGS) {
         *status_code = 400;
         return "Please insert your subscription link instead of clicking the default link.";
     }
-    writeLog(0, "SurgeConfToClash called with url '" + url + "'.", LOG_LEVEL_INFO);
+    writeLog(0, "SurgeConfToClash called with url '" + url + "'.", LOG_LEVEL_DEBUG);
 
     std::string proxy = parseProxy(global.proxyConfig);
     YAML::Node clash;
@@ -1028,10 +1044,11 @@ std::string surgeConfToClash(RESPONSE_CALLBACK_ARGS) {
     parse_set.stream_rules = parse_set.time_rules = &dummy_regex_array;
     parse_set.request_header = &request.headers;
     parse_set.sub_info = &subInfo;
-    parse_set.authorized = !global.APIMode;
+    parse_set.authorized = !global.accessToken.empty()
+        && getUrlArg(request.argument, "token") == global.accessToken;
     for (std::string &x: links) {
         //std::cerr<<"Fetching node data from url '"<<x<<"'."<<std::endl;
-        writeLog(0, "Fetching node data from url '" + x + "'.", LOG_LEVEL_INFO);
+        writeLog(0, "Fetching node data from url '" + x + "'.", LOG_LEVEL_DEBUG);
         if (addNodes(x, nodes, 0, parse_set) == -1) {
             if (global.skipFailedLinks)
                 writeLog(0, "The following link doesn't contain any valid node info: " + x, LOG_LEVEL_WARNING);
@@ -1136,7 +1153,7 @@ std::string surgeConfToClash(RESPONSE_CALLBACK_ARGS) {
     clash[rule_name] = rule;
 
     response.headers["profile-update-interval"] = std::to_string(global.updateInterval / 3600);
-    writeLog(0, "Conversion completed.", LOG_LEVEL_INFO);
+    writeLog(0, "Conversion completed.", LOG_LEVEL_DEBUG);
     return YAML::Dump(clash);
 }
 
@@ -1164,7 +1181,7 @@ std::string getProfile(RESPONSE_CALLBACK_ARGS) {
         return "Profile not found";
     }
     //std::cerr<<"Trying to load profile '" + name + "'.\n";
-    writeLog(0, "Trying to load profile '" + name + "'.", LOG_LEVEL_INFO);
+    writeLog(0, "Trying to load profile '" + name + "'.", LOG_LEVEL_DEBUG);
     INIReader ini;
     if (ini.parse(profile_content) != INIREADER_EXCEPTION_NONE && !ini.section_exist("Profile")) {
         //std::cerr<<"Load profile failed! Reason: "<<ini.get_last_error()<<"\n";
@@ -1173,7 +1190,7 @@ std::string getProfile(RESPONSE_CALLBACK_ARGS) {
         return "Broken profile!";
     }
     //std::cerr<<"Trying to parse profile '" + name + "'.\n";
-    writeLog(0, "Trying to parse profile '" + name + "'.", LOG_LEVEL_INFO);
+    writeLog(0, "Trying to parse profile '" + name + "'.", LOG_LEVEL_DEBUG);
     string_multimap contents;
     ini.get_items("Profile", contents);
     if (contents.empty()) {
@@ -1215,9 +1232,9 @@ std::string getProfile(RESPONSE_CALLBACK_ARGS) {
             url = ini.get("Profile", "url");
             if (!url.empty()) {
                 all_urls += "|" + url;
-                writeLog(0, "Profile url from '" + name + "' added.", LOG_LEVEL_INFO);
+                writeLog(0, "Profile url from '" + name + "' added.", LOG_LEVEL_DEBUG);
             } else {
-                writeLog(0, "Profile '" + name + "' does not have url key. Skipping...", LOG_LEVEL_INFO);
+                writeLog(0, "Profile '" + name + "' does not have url key. Skipping...", LOG_LEVEL_DEBUG);
             }
         }
         iter->second = all_urls;
@@ -1235,7 +1252,7 @@ std::string getProfile(RESPONSE_CALLBACK_ARGS) {
 std::string jinja2_webGet(const std::string &url)
 {
     std::string proxy = parseProxy(global.proxyConfig);
-    writeLog(0, "Template called fetch with url '" + url + "'.", LOG_LEVEL_INFO);
+    writeLog(0, "Template called fetch with url '" + url + "'.", LOG_LEVEL_DEBUG);
     return webGet(url, proxy, global.cacheConfig);
 }*/
 

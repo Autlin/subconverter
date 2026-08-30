@@ -2,7 +2,7 @@
 
 set -Eeuo pipefail
 
-REPOSITORY="${SUBCONVERTER_REPOSITORY:-Autlin/subconverter}"
+REPOSITORY="${SUBCONVERTER_REPOSITORY:-MiCat-S/subconverter}"
 INSTALL_ROOT="${SUBCONVERTER_HOME:-/opt/subconverter}"
 SERVICE_NAME="${SUBCONVERTER_SERVICE:-subconverter}"
 SERVICE_USER="${SUBCONVERTER_USER:-subconverter}"
@@ -211,7 +211,7 @@ ensure_layout() {
     fi
     install -d -m 0755 "${INSTALL_ROOT}"
     install -d -m 0700 "${BACKUPS_DIR}"
-    chmod 0755 "${INSTALL_ROOT}"
+    chmod 0750 "${INSTALL_ROOT}"
     chmod 0700 "${BACKUPS_DIR}"
 }
 
@@ -635,7 +635,7 @@ write_service_unit() {
     fi
 
     local unit_temp="${TEMP_DIR:-/tmp}/subconverter.service.$$"
-    cat >"${unit_temp}" <<EOF
+cat >"${unit_temp}" <<EOF
 [Unit]
 Description=SubConverter subscription converter
 After=network-online.target
@@ -645,12 +645,25 @@ Wants=network-online.target
 Type=simple
 User=${SERVICE_USER}
 Group=${SERVICE_USER}
+UMask=0027
 WorkingDirectory=${INSTALL_ROOT}
 EnvironmentFile=-${ENV_FILE}
 ExecStart=${INSTALL_ROOT}/subconverter
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=${INSTALL_ROOT}
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+CapabilityBoundingSet=
 
 [Install]
 WantedBy=multi-user.target
@@ -755,10 +768,23 @@ set_runtime_ownership() {
     install -d -m 0700 "${BACKUPS_DIR}"
     shopt -s nullglob dotglob
     for path in "${INSTALL_ROOT}"/* "${INSTALL_ROOT}"/.[!.]* "${INSTALL_ROOT}"/..?*; do
-        [[ "${path}" == "${BACKUPS_DIR}" || "${path}" == "${TEMP_DIR}" ]] && continue
+        [[ "${path}" == "${BACKUPS_DIR}" || "${path}" == "${TEMP_DIR}" ||
+            "${path}" == "${INSTALL_ROOT}/subconverter-manager.sh" ]] && continue
         chown -R "${SERVICE_USER}:${SERVICE_USER}" "${path}"
     done
     shopt -u nullglob dotglob
+
+    chown root:"${SERVICE_USER}" "${INSTALL_ROOT}"
+    chmod 0750 "${INSTALL_ROOT}"
+    chown root:root "${INSTALL_ROOT}/subconverter-manager.sh" 2>/dev/null || true
+    chmod 0755 "${INSTALL_ROOT}/subconverter-manager.sh" 2>/dev/null || true
+    find "${INSTALL_ROOT}" -mindepth 1 -maxdepth 1 -type d \
+        ! -name backups \
+        -exec chmod 0750 {} +
+    find "${INSTALL_ROOT}" -maxdepth 1 -type f \
+        \( -name '*.conf' -o -name '*.ini' -o -name '*.json' \
+        -o -name '*.toml' -o -name '*.yaml' -o -name '*.yml' \) \
+        -exec chmod 0600 {} +
 
     chown -R root:root "${BACKUPS_DIR}"
     chmod 0700 "${BACKUPS_DIR}"

@@ -1,9 +1,10 @@
 #include <iostream>
 #include <unistd.h>
 #include <sys/stat.h>
-//#include <mutex>
-#include <thread>
-#include <atomic>
+#include <array>
+#include <functional>
+#include <mutex>
+#include <shared_mutex>
 
 #include <curl/curl.h>
 
@@ -11,7 +12,6 @@
 #include "utils/base64/base64.h"
 #include "utils/defer.h"
 #include "utils/file_extra.h"
-#include "utils/lock.h"
 #include "utils/logger.h"
 #include "utils/urlencode.h"
 #include "version.h"
@@ -23,12 +23,8 @@
 #endif // _stat
 #endif // _WIN32
 
-/*
-using guarded_mutex = std::lock_guard<std::mutex>;
-std::mutex cache_rw_lock;
-*/
-
-RWLock cache_rw_lock;
+std::shared_mutex cache_rw_lock;
+static std::array<std::mutex, 64> cache_key_locks;
 
 //std::string user_agent_str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/74.0.3729.169 Safari/537.36";
 static auto user_agent_str = "subconverter/" VERSION " cURL/" LIBCURL_VERSION;
@@ -38,14 +34,12 @@ struct curl_progress_data
     long size_limit = 0L;
 };
 
-static inline void curl_init()
+static bool curl_init()
 {
-    static bool init = false;
-    if(!init)
-    {
-        curl_global_init(CURL_GLOBAL_ALL);
-        init = true;
-    }
+    static std::once_flag init_flag;
+    static CURLcode init_result = CURLE_FAILED_INIT;
+    std::call_once(init_flag, [](){ init_result = curl_global_init(CURL_GLOBAL_ALL); });
+    return init_result == CURLE_OK;
 }
 
 static int writer(char *data, size_t size, size_t nmemb, std::string *writerData)
@@ -129,8 +123,10 @@ static inline void curl_set_common_options(CURL *curl_handle, const char *url, c
     curl_easy_setopt(curl_handle, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(curl_handle, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl_handle, CURLOPT_MAXREDIRS, 20L);
-    curl_easy_setopt(curl_handle, CURLOPT_SSL_VERIFYPEER, 0L);
-    curl_easy_setopt(curl_handle, CURLOPT_SSL_VERIFYHOST, 0L);
+    curl_easy_setopt(curl_handle, CURLOPT_SSL_VERIFYPEER, 1L);
+    curl_easy_setopt(curl_handle, CURLOPT_SSL_VERIFYHOST, 2L);
+    curl_easy_setopt(curl_handle, CURLOPT_PROTOCOLS, CURLPROTO_HTTP | CURLPROTO_HTTPS);
+    curl_easy_setopt(curl_handle, CURLOPT_REDIR_PROTOCOLS, CURLPROTO_HTTP | CURLPROTO_HTTPS);
     curl_easy_setopt(curl_handle, CURLOPT_TIMEOUT, 15L);
     curl_easy_setopt(curl_handle, CURLOPT_COOKIEFILE, "");
     if(data)
@@ -145,15 +141,24 @@ static inline void curl_set_common_options(CURL *curl_handle, const char *url, c
 //static std::string curlGet(const std::string &url, const std::string &proxy, std::string &response_headers, CURLcode &return_code, const string_map &request_headers)
 static int curlGet(const FetchArgument &argument, FetchResult &result)
 {
-    CURL *curl_handle;
+    CURL *curl_handle = nullptr;
     std::string *data = result.content, new_url = argument.url;
     curl_slist *header_list = nullptr;
     defer(curl_slist_free_all(header_list);)
-    long retVal;
+    CURLcode retVal = CURLE_FAILED_INIT;
 
-    curl_init();
+    if(!curl_init())
+    {
+        *result.status_code = 0;
+        return 0;
+    }
 
     curl_handle = curl_easy_init();
+    if(curl_handle == nullptr)
+    {
+        *result.status_code = 0;
+        return 0;
+    }
     if(!argument.proxy.empty())
     {
         if(startsWith(argument.proxy, "cors:"))
@@ -267,7 +272,6 @@ static int curlGet(const FetchArgument &argument, FetchResult &result)
     {
         if(retVal != CURLE_OK || *result.status_code != 200)
             data->clear();
-        data->shrink_to_fit();
     }
 
     return *result.status_code;
@@ -313,20 +317,26 @@ std::string webGet(const std::string &url, const std::string &proxy, unsigned in
         md("cache");
         const std::string url_md5 = getMD5(url);
         const std::string path = "cache/" + url_md5, path_header = path + "_header";
-        struct stat result {};
-        if(stat(path.data(), &result) == 0) // cache exist
+        std::unique_lock<std::mutex> key_lock(cache_key_locks[std::hash<std::string>{}(url_md5) % cache_key_locks.size()]);
+        struct stat cache_stat {};
+        bool cache_exists = false;
         {
-            time_t mtime = result.st_mtime, now = time(nullptr); // get cache modified time and current time
-            if(difftime(now, mtime) <= cache_ttl) // within TTL
+            std::shared_lock<std::shared_mutex> cache_lock(cache_rw_lock);
+            cache_exists = stat(path.data(), &cache_stat) == 0;
+            if(cache_exists)
             {
-                writeLog(0, "CACHE HIT: '" + url + "', using local cache.");
-                //guarded_mutex guard(cache_rw_lock);
-                cache_rw_lock.readLock();
-                defer(cache_rw_lock.readUnlock();)
-                if(response_headers)
-                    *response_headers = fileGet(path_header, true);
-                return fileGet(path, true);
+                time_t mtime = cache_stat.st_mtime, now = time(nullptr);
+                if(difftime(now, mtime) <= cache_ttl)
+                {
+                    writeLog(0, "CACHE HIT: '" + url + "', using local cache.");
+                    if(response_headers)
+                        *response_headers = fileGet(path_header, true);
+                    return fileGet(path, true);
+                }
             }
+        }
+        if(cache_exists)
+        {
             writeLog(0, "CACHE MISS: '" + url + "', TTL timeout, creating new cache."); // out of TTL
         }
         else
@@ -335,21 +345,17 @@ std::string webGet(const std::string &url, const std::string &proxy, unsigned in
         curlGet(argument, fetch_res);
         if(return_code == 200) // success, save new cache
         {
-            //guarded_mutex guard(cache_rw_lock);
-            cache_rw_lock.writeLock();
-            defer(cache_rw_lock.writeUnlock();)
+            std::unique_lock<std::shared_mutex> cache_lock(cache_rw_lock);
             fileWrite(path, content, true);
             if(response_headers)
                 fileWrite(path_header, *response_headers, true);
         }
         else
         {
+            std::shared_lock<std::shared_mutex> cache_lock(cache_rw_lock);
             if(fileExist(path) && global.serveCacheOnFetchFail) // failed, check if cache exist
             {
                 writeLog(0, "Fetch failed. Serving cached content."); // cache exist, serving cache
-                //guarded_mutex guard(cache_rw_lock);
-                cache_rw_lock.readLock();
-                defer(cache_rw_lock.readUnlock();)
                 content = fileGet(path, true);
                 if(response_headers)
                     *response_headers = fileGet(path_header, true);
@@ -366,9 +372,7 @@ std::string webGet(const std::string &url, const std::string &proxy, unsigned in
 
 void flushCache()
 {
-    //guarded_mutex guard(cache_rw_lock);
-    cache_rw_lock.writeLock();
-    defer(cache_rw_lock.writeUnlock();)
+    std::unique_lock<std::shared_mutex> cache_lock(cache_rw_lock);
     operateFiles("cache", [](const std::string &file){ remove(("cache/" + file).data()); return 0; });
 }
 

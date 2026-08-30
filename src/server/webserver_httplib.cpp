@@ -5,6 +5,7 @@
 #define CPPHTTPLIB_REQUEST_URI_MAX_LENGTH 16384
 #include "httplib.h"
 
+#include "handler/settings.h"
 #include "utils/base64/base64.h"
 #include "utils/logger.h"
 #include "utils/string_hash.h"
@@ -92,9 +93,36 @@ static std::string dump(const httplib::Headers &headers)
     return s;
 }
 
+static void apply_cors(WebServer &server, const httplib::Request &req, httplib::Response &res)
+{
+    const std::string allowed = server.corsHeaderFor(req.get_header_value("Origin"));
+    if(allowed.empty())
+        return;
+
+    res.set_header("Access-Control-Allow-Origin", allowed);
+    if(allowed != "*")
+        res.set_header("Vary", "Origin");
+    if(req.method == "OPTIONS")
+        res.set_header("Access-Control-Allow-Headers", "Content-Type, Authorization");
+}
+
 int WebServer::start_web_server_multi(listener_args *args)
 {
     httplib::Server server;
+    server.set_socket_options([](socket_t sock)
+    {
+        int yes = 1;
+#ifdef _WIN32
+        setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char *>(&yes), sizeof(yes));
+        setsockopt(sock, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, reinterpret_cast<const char *>(&yes), sizeof(yes));
+#else
+        setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const void *>(&yes), sizeof(yes));
+#ifdef SO_REUSEPORT
+        int no = 0;
+        setsockopt(sock, SOL_SOCKET, SO_REUSEPORT, reinterpret_cast<const void *>(&no), sizeof(no));
+#endif
+#endif
+    });
     for (auto &x : responses)
     {
         switch (hash_(x.method))
@@ -132,8 +160,6 @@ int WebServer::start_web_server_multi(listener_args *args)
             allowed.pop_back();
             res.status = 200;
             res.set_header("Access-Control-Allow-Methods", allowed);
-            res.set_header("Access-Control-Allow-Origin", "*");
-            res.set_header("Access-Control-Allow-Headers", "Content-Type,Authorization");
         }
         else
         {
@@ -142,9 +168,14 @@ int WebServer::start_web_server_multi(listener_args *args)
     });
     server.set_pre_routing_handler([&](const httplib::Request &req, httplib::Response &res)
     {
-        writeLog(0, "Accept connection from client " + req.remote_addr + ":" + std::to_string(req.remote_port), LOG_LEVEL_DEBUG);
-        writeLog(0, "handle_cmd:    " + req.method + " handle_uri:    " + req.target, LOG_LEVEL_VERBOSE);
-        writeLog(0, "handle_header: " + dump(req.headers), LOG_LEVEL_VERBOSE);
+        apply_cors(*this, req, res);
+        if(global.logLevel >= LOG_LEVEL_DEBUG)
+            writeLog(0, "Accept connection from client " + req.remote_addr + ":" + std::to_string(req.remote_port), LOG_LEVEL_DEBUG);
+        if(global.logLevel >= LOG_LEVEL_VERBOSE)
+        {
+            writeLog(0, "handle_cmd:    " + req.method + " handle_uri:    " + req.target, LOG_LEVEL_VERBOSE);
+            writeLog(0, "handle_header: " + dump(req.headers), LOG_LEVEL_VERBOSE);
+        }
 
         if (req.has_header("SubConverter-Request"))
         {
@@ -166,11 +197,6 @@ int WebServer::start_web_server_multi(listener_args *args)
             }
         }
         res.set_header("X-Client-IP", req.remote_addr);
-        if (req.has_header("Access-Control-Request-Headers"))
-        {
-            res.set_header("Access-Control-Allow-Headers", req.get_header_value("Access-Control-Request-Headers"));
-        }
-        res.set_header("Access-Control-Allow-Origin", "*");
         return httplib::Server::HandlerResponse::Unhandled;
     });
     for (auto &x : redirect_map)
@@ -203,13 +229,11 @@ int WebServer::start_web_server_multi(listener_args *args)
         }
         catch (const std::exception &ex)
         {
-            std::string return_data = "Internal server error while processing request '" + req.target + "'!\n";
-            return_data += "\n  exception: ";
-            return_data += type(ex);
-            return_data += "\n  what(): ";
-            return_data += ex.what();
+            std::string return_data = "Internal server error";
             res.status = 500;
             res.set_content(return_data, "text/plain");
+            writeLog(0, "Internal server error while processing request '" + req.target
+                + "': " + type(ex) + ": " + ex.what(), LOG_LEVEL_ERROR);
         }
         catch (...)
         {
@@ -223,7 +247,11 @@ int WebServer::start_web_server_multi(listener_args *args)
     server.new_task_queue = [args] {
         return new httplib::ThreadPool(args->max_workers);
     };
-    server.bind_to_port(args->listen_address, args->port, 0);
+    if(!server.bind_to_port(args->listen_address, args->port, 0))
+    {
+        writeLog(0, "Failed to bind HTTP server to " + args->listen_address + ":" + std::to_string(args->port), LOG_LEVEL_FATAL);
+        return -1;
+    }
 
     std::thread thread([&]()
     {

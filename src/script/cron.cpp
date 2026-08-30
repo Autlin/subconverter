@@ -1,5 +1,6 @@
 #include <string>
 #include <iostream>
+#include <mutex>
 #include <libcron/Cron.h>
 
 #include "config/crontask.h"
@@ -13,6 +14,7 @@
 #include "script_quickjs.h"
 
 libcron::Cron cron;
+std::mutex cron_mutex;
 
 struct script_info
 {
@@ -23,7 +25,7 @@ struct script_info
 
 int timeout_checker(JSRuntime *rt, void *opaque)
 {
-    script_info info = *static_cast<script_info*>(opaque);
+    const script_info &info = *static_cast<script_info*>(opaque);
     if(info.timeout != 0 && time(NULL) >= info.begin_time + info.timeout) /// timeout reached
     {
         writeLog(0, "Script '" + info.name + "' has exceeded timeout " + std::to_string(info.timeout) + ", terminate now.", LOG_LEVEL_WARNING);
@@ -34,6 +36,7 @@ int timeout_checker(JSRuntime *rt, void *opaque)
 
 void refresh_schedule()
 {
+    std::lock_guard<std::mutex> lock(cron_mutex);
     cron.clear_schedules();
     for(const CronTaskConfig &x : global.cronTasks)
     {
@@ -110,5 +113,6 @@ std::string list_cron_schedule(RESPONSE_CALLBACK_ARGS)
 
 size_t cron_tick()
 {
+    std::lock_guard<std::mutex> lock(cron_mutex);
     return cron.tick();
 }
